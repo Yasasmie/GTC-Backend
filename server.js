@@ -15,6 +15,9 @@ function readDb() {
     const initial = {
       users: [],
       accounts: [],
+      bots: [],
+      adminBots: [],
+      careers: [],
       nextUserId: 1,
     };
     fs.writeFileSync(DB_PATH, JSON.stringify(initial, null, 2), 'utf8');
@@ -23,12 +26,22 @@ function readDb() {
 
   const raw = fs.readFileSync(DB_PATH, 'utf8');
   try {
-    return JSON.parse(raw);
+    const parsed = JSON.parse(raw);
+    // ensure new arrays exist if db was created earlier
+    if (!parsed.accounts) parsed.accounts = [];
+    if (!parsed.bots) parsed.bots = [];
+    if (!parsed.adminBots) parsed.adminBots = [];
+    if (!parsed.careers) parsed.careers = [];
+    if (parsed.nextUserId == null) parsed.nextUserId = 1;
+    return parsed;
   } catch (e) {
     console.error('Failed to parse db.json, reinitializing.', e);
     const initial = {
       users: [],
       accounts: [],
+      bots: [],
+      adminBots: [],
+      careers: [],
       nextUserId: 1,
     };
     fs.writeFileSync(DB_PATH, JSON.stringify(initial, null, 2), 'utf8');
@@ -264,7 +277,7 @@ app.get('/api/users/:uid/accounts', (req, res) => {
   res.json(userAccounts);
 });
 
-// Delete one account (optional)
+// Delete one account
 app.delete('/api/users/:uid/accounts/:id', (req, res) => {
   const { uid, id } = req.params;
   const numericId = Number(id);
@@ -285,19 +298,17 @@ app.delete('/api/users/:uid/accounts/:id', (req, res) => {
 
 // ---------------- BOTS ----------------
 
-// We will store user-bot connections here: { id, uid, brokerAccountId, botId, signedAgreementUrl, ... }
 function ensureBotsArray(db) {
   if (!db.bots) db.bots = [];
 }
 
-// OLD static catalog kept only if you still need it elsewhere (not for assignments)
+// OLD static catalog
 const BOT_CATALOG = [
   { id: 'bot1', name: 'Scalper Pro', price: 49.99 },
   { id: 'bot2', name: 'Trend Rider', price: 59.99 },
   { id: 'bot3', name: 'Grid Master', price: 39.99 },
 ];
 
-// Return static catalog (optional, not used by Bots.jsx now)
 app.get('/api/bots/catalog', (req, res) => {
   res.json(BOT_CATALOG);
 });
@@ -325,7 +336,6 @@ app.post('/api/users/:uid/bots', (req, res) => {
     return res.status(404).json({ message: 'Broker account not found' });
   }
 
-  // use adminBots (ids are numbers)
   if (!db.adminBots) db.adminBots = [];
   const adminBot = db.adminBots.find(b => b.id === botId);
   if (!adminBot) {
@@ -363,19 +373,8 @@ app.get('/api/users/:uid/bots', (req, res) => {
   res.json(userBots);
 });
 
-
-// Get all bots for a user
-app.get('/api/users/:uid/bots', (req, res) => {
-  const { uid } = req.params;
-  const db = readDb();
-  ensureBotsArray(db);
-  const userBots = db.bots.filter(b => b.uid === uid);
-  res.json(userBots);
-});
-
 // ---------------- ADMIN MANAGE BOTS ----------------
 
-// ensure bots array exists in db.json (this is separate from BOT_CATALOG)
 function ensureAdminBotsArray(db) {
   if (!db.adminBots) db.adminBots = [];
 }
@@ -455,16 +454,11 @@ app.delete('/api/admin/bots/:id', (req, res) => {
 
 // ---------------- ADMIN BOT REQUESTS ----------------
 
-function ensureBotsArray(db) {
-  if (!db.bots) db.bots = [];
-}
-
-// List all bot requests (you can filter pending on frontend)
+// List all bot requests
 app.get('/api/admin/bot-requests', (req, res) => {
   const db = readDb();
   ensureBotsArray(db);
 
-  // Join with users for name/email
   const requests = db.bots
     .map(b => {
       const user = db.users.find(u => u.uid === b.uid);
@@ -482,12 +476,12 @@ app.get('/api/admin/bot-requests', (req, res) => {
         createdAt: b.createdAt,
       };
     })
-    .sort((a, b) => b.id - a.id); // latest first
+    .sort((a, b) => b.id - a.id);
 
   res.json(requests);
 });
 
-// Get single bot request (for modal)
+// Get single bot request
 app.get('/api/admin/bot-requests/:id', (req, res) => {
   const id = Number(req.params.id);
   const db = readDb();
@@ -540,6 +534,62 @@ app.put('/api/admin/bot-requests/:id/reject', (req, res) => {
   res.json({ message: 'Bot request rejected', bot: b });
 });
 
+// ---------------- CAREERS ----------------
+
+// User: submit career application
+app.post('/api/careers', (req, res) => {
+  const {
+    name,
+    address,
+    nic,
+    phone,
+    whatsapp,
+    email,
+    currentlyWorking,
+    employmentType,
+    yearsExperience,
+    preferredRole,
+    availableFrom,
+    notes,
+  } = req.body;
+
+  if (!name || !address || !nic || !phone || !whatsapp) {
+    return res.status(400).json({ message: 'Required fields missing' });
+  }
+
+  const db = readDb();
+  if (!db.careers) db.careers = [];
+
+  const newApplication = {
+    id: Date.now(),
+    name,
+    address,
+    nic,
+    phone,
+    whatsapp,
+    email: email || '',
+    currentlyWorking: currentlyWorking || 'no',
+    employmentType: employmentType || 'full-time',
+    yearsExperience: yearsExperience || '',
+    preferredRole: preferredRole || '',
+    availableFrom: availableFrom || '',
+    notes: notes || '',
+    createdAt: new Date().toISOString(),
+  };
+
+  db.careers.push(newApplication);
+  writeDb(db);
+
+  res.status(201).json(newApplication);
+});
+
+// Admin: list all career applications
+app.get('/api/admin/careers', (req, res) => {
+  const db = readDb();
+  if (!db.careers) db.careers = [];
+  const sorted = [...db.careers].sort((a, b) => b.id - a.id);
+  res.json(sorted);
+});
 
 // ---------------- SERVER ----------------
 

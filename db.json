@@ -155,5 +155,23 @@
       "subscriptionFee": 50,
       "createdAt": "2026-02-10T09:30:46.011Z"
     }
+  ],
+  "careers": [
+    {
+      "id": 1772087982155,
+      "name": "User One",
+      "address": "vghebinjm",
+      "nic": "8462",
+      "phone": "949841",
+      "whatsapp": "84614",
+      "email": "cfdsef@bh.cii",
+      "currentlyWorking": "no",
+      "employmentType": "part-time",
+      "yearsExperience": "0",
+      "preferredRole": "cdc",
+      "availableFrom": "2026-02-27",
+      "notes": "dcw",
+      "createdAt": "2026-02-26T06:39:42.155Z"
+    }
   ]
 }
