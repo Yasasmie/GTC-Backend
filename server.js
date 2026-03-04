@@ -591,6 +591,215 @@ app.get('/api/admin/careers', (req, res) => {
   res.json(sorted);
 });
 
+// ---------------- COURSES (ENHANCED) ----------------
+
+function ensureCoursesArray(db) {
+  if (!db.courses) db.courses = [];
+}
+
+function ensureCourseApplicationsArray(db) {
+  if (!db.courseApplications) db.courseApplications = [];
+}
+
+// Public: Get all courses
+app.get('/api/courses', (req, res) => {
+  try {
+    const db = readDb();
+    ensureCoursesArray(db);
+    const sortedCourses = [...db.courses].sort(
+      (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+    );
+    res.json(sortedCourses);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch courses' });
+  }
+});
+
+// Admin: Create course
+app.post('/api/admin/courses', (req, res) => {
+  try {
+    const db = readDb();
+    ensureCoursesArray(db);
+
+    const body = req.body || {};
+    // normalize youtubeLinks to array
+    let youtubeLinks = body.youtubeLinks;
+    if (!Array.isArray(youtubeLinks)) {
+      if (body.youtubeLink && typeof body.youtubeLink === 'string') {
+        youtubeLinks = [body.youtubeLink];
+      } else {
+        youtubeLinks = [];
+      }
+    }
+
+    const newCourse = {
+      id: Date.now(),
+      title: body.title || '',
+      description: body.description || '',
+      duration: body.duration || '',
+      category: body.category || 'Management',
+      type: body.type || 'online',              // 'online' or 'physical'
+      level: body.level || 'Beginner',
+      thumbnail: body.thumbnail || '',
+      youtubeLinks,
+      location: body.location || '',
+      date: body.date || '',
+      price: body.price != null ? body.price : 0,
+      createdAt: new Date().toISOString(),
+    };
+
+    db.courses.push(newCourse);
+    writeDb(db);
+    res.status(201).json(newCourse);
+  } catch (err) {
+    res.status(400).json({ error: 'Failed to create course' });
+  }
+});
+
+// Admin: Update course
+app.put('/api/admin/courses/:id', (req, res) => {
+  try {
+    const db = readDb();
+    ensureCoursesArray(db);
+    const id = Number(req.params.id);
+    const course = db.courses.find(c => c.id === id);
+    if (!course) {
+      return res.status(404).json({ error: 'Course not found' });
+    }
+
+    const body = req.body || {};
+
+    if (body.title !== undefined) course.title = body.title;
+    if (body.description !== undefined) course.description = body.description;
+    if (body.duration !== undefined) course.duration = body.duration;
+    if (body.category !== undefined) course.category = body.category;
+    if (body.type !== undefined) course.type = body.type;
+    if (body.level !== undefined) course.level = body.level;
+    if (body.thumbnail !== undefined) course.thumbnail = body.thumbnail;
+    if (body.location !== undefined) course.location = body.location;
+    if (body.date !== undefined) course.date = body.date;
+    if (body.price !== undefined) course.price = body.price;
+
+    // youtubeLinks: always store array of strings
+    if (body.youtubeLinks !== undefined) {
+      if (Array.isArray(body.youtubeLinks)) {
+        course.youtubeLinks = body.youtubeLinks;
+      } else if (body.youtubeLink && typeof body.youtubeLink === 'string') {
+        course.youtubeLinks = [body.youtubeLink];
+      }
+    }
+
+    writeDb(db);
+    res.json(course);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update course' });
+  }
+});
+
+// Admin: Delete course
+app.delete('/api/admin/courses/:id', (req, res) => {
+  try {
+    const db = readDb();
+    ensureCoursesArray(db);
+    const id = Number(req.params.id);
+    const index = db.courses.findIndex(c => c.id === id);
+    if (index === -1) return res.status(404).json({ error: 'Course not found' });
+
+    db.courses.splice(index, 1);
+    writeDb(db);
+    res.json({ message: 'Course deleted' });
+  } catch (err) {
+    res.status(500).json({ error: 'Delete failed' });
+  }
+});
+
+// ---------------- COURSE APPLICATIONS ----------------
+
+// User: submit course application with payment slip (base64 or URL)
+app.post('/api/courses/apply', (req, res) => {
+  try {
+    const {
+      courseId,
+      name,
+      email,
+      phone,
+      notes,
+      paymentSlip, // string: base64 image or URL
+    } = req.body;
+
+    if (!courseId || !name || !email || !paymentSlip) {
+      return res.status(400).json({ error: 'courseId, name, email, paymentSlip are required' });
+    }
+
+    const db = readDb();
+    ensureCoursesArray(db);
+    ensureCourseApplicationsArray(db);
+
+    const course = db.courses.find(c => c.id === Number(courseId));
+    if (!course) {
+      return res.status(404).json({ error: 'Course not found' });
+    }
+
+    const appRecord = {
+      id: Date.now(),
+      courseId: course.id,
+      courseTitle: course.title,
+      category: course.category,
+      type: course.type,
+      price: course.price,
+      name,
+      email,
+      phone: phone || '',
+      notes: notes || '',
+      paymentSlip, // store raw string
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    };
+
+    db.courseApplications.push(appRecord);
+    writeDb(db);
+
+    res.status(201).json(appRecord);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to submit course application' });
+  }
+});
+
+// Admin: list all course applications
+app.get('/api/admin/course-applications', (req, res) => {
+  try {
+    const db = readDb();
+    ensureCourseApplicationsArray(db);
+    const sorted = [...db.courseApplications].sort((a, b) => b.id - a.id);
+    res.json(sorted);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch course applications' });
+  }
+});
+
+// Admin: update application status
+app.put('/api/admin/course-applications/:id/status', (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { status } = req.body; // 'pending' | 'approved' | 'rejected'
+    const db = readDb();
+    ensureCourseApplicationsArray(db);
+
+    const appRecord = db.courseApplications.find(a => a.id === id);
+    if (!appRecord) {
+      return res.status(404).json({ error: 'Application not found' });
+    }
+
+    if (status) appRecord.status = status;
+
+    writeDb(db);
+    res.json(appRecord);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update application status' });
+  }
+});
+
+
 // ---------------- SERVER ----------------
 
 const PORT = 5000;
