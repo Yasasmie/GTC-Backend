@@ -71,7 +71,7 @@
       "name": "one user",
       "status": "approved",
       "kycCompleted": true,
-      "kycStatus": "pending",
+      "kycStatus": "approved",
       "kyc": {
         "fullName": "one user",
         "address": "test1mkgerjg",
