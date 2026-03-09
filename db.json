@@ -121,6 +121,8 @@
       "price": 200,
       "broker": "Nord fx",
       "accountNumber": "1111",
+      "botType": "Trend Follower",
+      "botModel": "TF-2024",
       "status": "pending",
       "createdAt": "2026-02-10T10:21:21.303Z"
     },
@@ -134,6 +136,8 @@
       "price": 100,
       "broker": "Momaxa",
       "accountNumber": "11111",
+      "botType": "Scalper",
+      "botModel": "Pro X1",
       "status": "rejected",
       "createdAt": "2026-02-10T10:30:37.239Z"
     }
@@ -153,6 +157,8 @@
       "price": 200,
       "cost": 100,
       "subscriptionFee": 50,
+      "botType": "Basic",
+      "botModel": "Model B",
       "createdAt": "2026-02-10T09:30:46.011Z"
     }
   ],

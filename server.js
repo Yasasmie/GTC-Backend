@@ -351,9 +351,12 @@ app.post('/api/users/:uid/bots', (req, res) => {
     botId,
     signedAgreementUrl,
     botName: adminBot.name,
+    botType: adminBot.botType || 'Trading Bot',
+    botModel: adminBot.botModel || 'N/A',
     price: adminBot.price,
     broker: account.broker,
     accountNumber: account.accountNumber,
+    accountType: account.accountType || 'N/A',
     status: 'pending',
     createdAt: new Date().toISOString(),
   };
@@ -405,11 +408,11 @@ app.get('/api/admin/bots', (req, res) => {
 
 // Create new bot
 app.post('/api/admin/bots', (req, res) => {
-  const { name, price, cost, subscriptionFee } = req.body;
+  const { name, price, cost, subscriptionFee, botType, botModel } = req.body;
   if (!name || price == null || cost == null || subscriptionFee == null) {
     return res
       .status(400)
-      .json({ message: 'name, price, cost, subscriptionFee are required' });
+      .json({ message: 'name, price, cost, subscriptionFee, botType, botModel are required' });
   }
 
   const db = readDb();
@@ -421,6 +424,8 @@ app.post('/api/admin/bots', (req, res) => {
     price,
     cost,
     subscriptionFee,
+    botType: botType || 'Trading Bot',
+    botModel: botModel || 'N/A',
     createdAt: new Date().toISOString(),
   };
 
