@@ -32,6 +32,8 @@ function readDb() {
     if (!parsed.bots) parsed.bots = [];
     if (!parsed.adminBots) parsed.adminBots = [];
     if (!parsed.careers) parsed.careers = [];
+    if (!parsed.resaleRequests) parsed.resaleRequests = [];
+    if (!parsed.resaleHistory) parsed.resaleHistory = [];
     if (parsed.nextUserId == null) parsed.nextUserId = 1;
     return parsed;
   } catch (e) {
@@ -56,7 +58,7 @@ function writeDb(db) {
 // ---------------- USERS + KYC ----------------
 
 app.post('/api/users', (req, res) => {
-  const { uid, email, name } = req.body;
+  const { uid, email, name, referredBy } = req.body;
 
   if (!uid || !email) {
     return res.status(400).json({ message: 'uid and email are required' });
@@ -78,6 +80,9 @@ app.post('/api/users', (req, res) => {
     kycCompleted: false,
     kycStatus: 'pending', // 'pending' | 'approved' | 'rejected'
     kyc: null,
+    totalSells: 0,
+    totalRevenue: 0,
+    referredBy: referredBy || null,
   };
 
   db.users.push(newUser);
@@ -106,6 +111,9 @@ app.get('/api/users/:uid/profile', (req, res) => {
     kycCompleted: user.kycCompleted,
     kycStatus: user.kycStatus || 'pending',
     kyc: user.kyc,
+    totalSells: user.totalSells || 0,
+    totalRevenue: user.totalRevenue || 0,
+    referredBy: user.referredBy || null,
   });
 });
 
@@ -554,6 +562,266 @@ app.put('/api/admin/bot-requests/:id/reject', (req, res) => {
   writeDb(db);
   res.json({ message: 'Bot request rejected', bot: b });
 });
+
+// ---------------- BOT RESALE MARKETPLACE ----------------
+
+// User: List a bot for resale
+app.post('/api/users/:uid/bots/:botId/resell', (req, res) => {
+  const { uid, botId } = req.params;
+  const { resalePrice } = req.body;
+
+  if (resalePrice == null || resalePrice < 0) {
+    return res.status(400).json({ message: 'Valid resalePrice is required' });
+  }
+
+  const db = readDb();
+  ensureBotsArray(db);
+
+  const userBot = db.bots.find(b => b.id === Number(botId) && b.uid === uid);
+  if (!userBot) {
+    return res.status(404).json({ message: 'Bot not found or does not belong to user' });
+  }
+
+  if (userBot.status !== 'approved') {
+    return res.status(400).json({ message: 'Only approved bots can be resold' });
+  }
+
+  if (userBot.boughtFrom) {
+    return res.status(400).json({ message: 'Bots purchased from other resellers cannot be resold again' });
+  }
+
+  userBot.isForResale = true;
+  userBot.resalePrice = resalePrice;
+
+  writeDb(db);
+  res.json({ message: 'Bot added to the shop', bot: userBot });
+});
+
+// User: Cancel resale listing
+app.post('/api/users/:uid/bots/:botId/cancel-resale', (req, res) => {
+  const { uid, botId } = req.params;
+  const db = readDb();
+  ensureBotsArray(db);
+
+  const userBot = db.bots.find(b => b.id === Number(botId) && b.uid === uid);
+  if (!userBot) {
+    return res.status(404).json({ message: 'Bot not found or does not belong to user' });
+  }
+
+  userBot.isForResale = false;
+  userBot.resalePrice = null;
+
+  writeDb(db);
+  res.json({ message: 'Bot removed from the shop', bot: userBot });
+});
+// GET: All bots available for resale (Marketplace)
+app.get('/api/bots/resale', (req, res) => {
+  const { buyerUid } = req.query;
+  const db = readDb();
+  ensureBotsArray(db);
+
+  let marketplace = db.bots.filter(b => b.isForResale);
+
+  if (buyerUid) {
+    const buyer = db.users.find(u => u.uid === buyerUid);
+    if (buyer && buyer.referredBy) {
+      // If buyer was referred, they ONLY see bots from their referrer
+      marketplace = marketplace.filter(b => b.uid === buyer.referredBy);
+    }
+  }
+
+  const results = marketplace.map(b => {
+    const seller = db.users.find(u => u.uid === b.uid);
+    return {
+      ...b,
+      sellerName: seller ? seller.name : 'Unknown Operator',
+    };
+  });
+
+  res.json(results);
+});
+
+// Helper for resale arrays
+function ensureResaleArrays(db) {
+  if (!db.resaleRequests) db.resaleRequests = [];
+  if (!db.resaleHistory) db.resaleHistory = [];
+}
+
+// User: Request to purchase a bot from resale marketplace
+app.post('/api/bots/resale/request', (req, res) => {
+  const { uid, botInstanceId, paymentSlip, brokerAccountId } = req.body;
+
+  if (!uid || !botInstanceId || !paymentSlip || !brokerAccountId) {
+    return res.status(400).json({ message: 'Missing required fields: uid, botInstanceId, paymentSlip, brokerAccountId' });
+  }
+
+  const db = readDb();
+  ensureBotsArray(db);
+  ensureResaleArrays(db);
+
+  const targetBot = db.bots.find(b => b.id === Number(botInstanceId));
+  if (!targetBot || !targetBot.isForResale) {
+    return res.status(404).json({ message: 'Bot listing not found in marketplace' });
+  }
+
+  if (targetBot.uid === uid) {
+    return res.status(400).json({ message: 'You cannot buy your own bot' });
+  }
+
+  const buyer = db.users.find(u => u.uid === uid);
+  if (!buyer) return res.status(404).json({ message: 'Buyer not found' });
+
+  const newRequest = {
+    id: Date.now(),
+    botInstanceId: Number(botInstanceId),
+    sellerUid: targetBot.uid,
+    buyerUid: uid,
+    buyerName: buyer.name,
+    botName: targetBot.botName,
+    price: targetBot.resalePrice,
+    paymentSlip,
+    brokerAccountId: Number(brokerAccountId),
+    status: 'pending',
+    createdAt: new Date().toISOString(),
+  };
+
+  db.resaleRequests.push(newRequest);
+  writeDb(db);
+
+  res.status(201).json({ message: 'Purchase request submitted', request: newRequest });
+});
+
+// User: Get requests for my listed bots (as seller)
+app.get('/api/users/:uid/seller-requests', (req, res) => {
+  const { uid } = req.params;
+  const db = readDb();
+  ensureResaleArrays(db);
+
+  const myRequests = db.resaleRequests.filter(r => r.sellerUid === uid);
+  res.json(myRequests);
+});
+
+// User: Approve or Decline resale request
+app.post('/api/bots/resale/requests/:requestId/status', (req, res) => {
+  const { requestId } = req.params;
+  const { status } = req.body; // 'approved' | 'rejected'
+
+  if (!['approved', 'rejected'].includes(status)) {
+    return res.status(400).json({ message: 'Invalid status' });
+  }
+
+  const db = readDb();
+  ensureResaleArrays(db);
+  ensureBotsArray(db);
+
+  const request = db.resaleRequests.find(r => r.id === Number(requestId));
+  if (!request) return res.status(404).json({ message: 'Request not found' });
+
+  if (request.status !== 'pending') {
+    return res.status(400).json({ message: 'Request already processed' });
+  }
+
+  request.status = status;
+
+  if (status === 'approved') {
+    const targetBot = db.bots.find(b => b.id === request.botInstanceId);
+    if (!targetBot) return res.status(404).json({ message: 'Original bot instance not found' });
+
+    const buyer = db.users.find(u => u.uid === request.buyerUid);
+    const seller = db.users.find(u => u.uid === request.sellerUid);
+    const buyerAccount = db.accounts.find(a => a.id === request.brokerAccountId && a.uid === request.buyerUid);
+
+    if (buyer && seller && buyerAccount) {
+      // Update seller stats
+      seller.totalSells = (seller.totalSells || 0) + 1;
+      seller.totalRevenue = (seller.totalRevenue || 0) + request.price;
+
+      // CLONE bot instead of transferring (Seller keeps theirs, buyer gets a copy)
+      const newBotInstance = {
+        ...targetBot,
+        id: Date.now() + Math.floor(Math.random() * 1000),
+        uid: request.buyerUid,
+        brokerAccountId: request.brokerAccountId,
+        broker: buyerAccount.broker,
+        accountNumber: buyerAccount.accountNumber,
+        isForResale: false,
+        resalePrice: null,
+        price: request.price,
+        boughtFrom: seller.name,
+        status: 'approved',
+        createdAt: new Date().toISOString(),
+      };
+
+      db.bots.push(newBotInstance);
+
+      // Add to history
+      db.resaleHistory.push({
+        id: Date.now() + 50,
+        requestId: request.id,
+        botName: targetBot.botName,
+        sellerUid: seller.uid,
+        sellerName: seller.name,
+        buyerUid: buyer.uid,
+        buyerName: buyer.name,
+        price: request.price,
+        date: new Date().toISOString()
+      });
+
+      // Notify seller
+      ensureNotificationsArray(db);
+      db.notifications.push({
+        id: Date.now() + 1,
+        uid: seller.uid,
+        type: 'bot_sold',
+        message: `Your sale for "${targetBot.botName}" was approved. You earned $${request.price}.`,
+        read: false,
+        createdAt: new Date().toISOString()
+      });
+
+      // Notify buyer
+      db.notifications.push({
+        id: Date.now() + 2,
+        uid: buyer.uid,
+        type: 'bot_purchased',
+        message: `Your request for "${targetBot.botName}" was approved by the seller.`,
+        read: false,
+        createdAt: new Date().toISOString()
+      });
+    }
+  } else {
+    // Rejected: Notify buyer
+    ensureNotificationsArray(db);
+    db.notifications.push({
+      id: Date.now() + 3,
+      uid: request.buyerUid,
+      type: 'bot_declined',
+      message: `Your request for "${request.botName}" was declined by the seller.`,
+      read: false,
+      createdAt: new Date().toISOString()
+    });
+  }
+
+  writeDb(db);
+  res.json({ message: `Request ${status}`, request });
+});
+
+// User: Get sale history (as seller)
+app.get('/api/users/:uid/sale-history', (req, res) => {
+  const { uid } = req.params;
+  const db = readDb();
+  ensureResaleArrays(db);
+  const history = db.resaleHistory.filter(h => h.sellerUid === uid);
+  res.json(history);
+});
+
+// Admin: Get all resale history
+app.get('/api/admin/resale-history', (req, res) => {
+  const db = readDb();
+  ensureResaleArrays(db);
+  res.json(db.resaleHistory || []);
+});
+
+// (Old direct purchase logic removed in favor of request/approve workflow)
 
 // ---------------- CAREERS ----------------
 
