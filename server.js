@@ -364,7 +364,7 @@ app.post('/api/users/:uid/bots', (req, res) => {
   res.status(201).json(newUserBot);
 });
 
-// Get all bots for a user
+// Get all bots for a user (user-facing)
 app.get('/api/users/:uid/bots', (req, res) => {
   const { uid } = req.params;
   const db = readDb();
@@ -372,6 +372,22 @@ app.get('/api/users/:uid/bots', (req, res) => {
   const userBots = db.bots.filter(b => b.uid === uid);
   res.json(userBots);
 });
+
+// ADMIN: get all bots for a user by UID
+app.get('/api/admin/users/:uid/bots', (req, res) => {
+  const { uid } = req.params;
+  const db = readDb();
+  ensureBotsArray(db);
+
+  const user = db.users.find(u => u.uid === uid);
+  if (!user) {
+    return res.status(404).json({ message: 'User not found' });
+  }
+
+  const userBots = db.bots.filter(b => b.uid === uid);
+  res.json(userBots);
+});
+
 
 // ---------------- ADMIN MANAGE BOTS ----------------
 
@@ -601,6 +617,10 @@ function ensureCourseApplicationsArray(db) {
   if (!db.courseApplications) db.courseApplications = [];
 }
 
+function ensureNotificationsArray(db) {
+  if (!db.notifications) db.notifications = [];
+}
+
 // Public: Get all courses
 app.get('/api/courses', (req, res) => {
   try {
@@ -725,10 +745,11 @@ app.post('/api/courses/apply', (req, res) => {
       phone,
       notes,
       paymentSlip, // string: base64 image or URL
+      uid, // User sending the request
     } = req.body;
 
-    if (!courseId || !name || !email || !paymentSlip) {
-      return res.status(400).json({ error: 'courseId, name, email, paymentSlip are required' });
+    if (!courseId || !name || !email || !paymentSlip || !uid) {
+      return res.status(400).json({ error: 'courseId, name, email, paymentSlip, uid are required' });
     }
 
     const db = readDb();
@@ -752,6 +773,7 @@ app.post('/api/courses/apply', (req, res) => {
       phone: phone || '',
       notes: notes || '',
       paymentSlip, // store raw string
+      uid, // Used for notifications
       status: 'pending',
       createdAt: new Date().toISOString(),
     };
@@ -790,7 +812,24 @@ app.put('/api/admin/course-applications/:id/status', (req, res) => {
       return res.status(404).json({ error: 'Application not found' });
     }
 
-    if (status) appRecord.status = status;
+    if (status && appRecord.status !== status) {
+      appRecord.status = status;
+
+      // Attempt to send notification if a valid user applied
+      if (appRecord.uid && (status === 'approved' || status === 'rejected')) {
+        ensureNotificationsArray(db);
+        db.notifications.push({
+          id: Date.now() + Math.floor(Math.random() * 1000),
+          uid: appRecord.uid,
+          courseId: appRecord.courseId,
+          type: 'course_application',
+          message: `Your application for course "${appRecord.courseTitle}" has been ${status}.`,
+          read: false,
+          createdAt: new Date().toISOString(),
+          status: status
+        });
+      }
+    }
 
     writeDb(db);
     res.json(appRecord);
@@ -800,7 +839,84 @@ app.put('/api/admin/course-applications/:id/status', (req, res) => {
 });
 
 
+// ---------------- NOTIFICATIONS ----------------
+app.get('/api/users/:uid/notifications', (req, res) => {
+  try {
+    const db = readDb();
+    ensureNotificationsArray(db);
+    const userNotifs = db.notifications
+      .filter(n => n.uid === req.params.uid)
+      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    res.json(userNotifs);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch notifications' });
+  }
+});
+
+app.put('/api/users/:uid/notifications/:notifId/read', (req, res) => {
+  try {
+    const db = readDb();
+    ensureNotificationsArray(db);
+    const notif = db.notifications.find(
+      n => n.id === Number(req.params.notifId) && n.uid === req.params.uid
+    );
+    if (notif) {
+      notif.read = true;
+      writeDb(db);
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to update notification' });
+  }
+});
+
+app.put('/api/users/:uid/notifications/read-all', (req, res) => {
+  try {
+    const db = readDb();
+    ensureNotificationsArray(db);
+    let updated = false;
+    db.notifications.forEach(n => {
+      if (n.uid === req.params.uid && !n.read) {
+        n.read = true;
+        updated = true;
+      }
+    });
+    if (updated) writeDb(db);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to clear all notifications' });
+  }
+});
+
 // ---------------- SERVER ----------------
+app.get('/api/users/:uid/course-applications', (req, res) => {
+  try {
+    const db = readDb();
+    ensureCourseApplicationsArray(db);
+    ensureCoursesArray(db);
+
+    const userApps = db.courseApplications.filter(a => a.uid === req.params.uid);
+
+    // Join with courses to get full details (description, youtubeLinks, etc.)
+    const enrichedApps = userApps.map(app => {
+      const course = db.courses.find(c => c.id === app.courseId);
+      return {
+        ...app,
+        courseDescription: course ? course.description : '',
+        youtubeLinks: course ? course.youtubeLinks : [],
+        duration: course ? course.duration : '',
+        level: course ? course.level : '',
+        location: course ? course.location : '',
+        date: course ? course.date : '',
+        thumbnail: course ? course.thumbnail : '',
+      };
+    });
+
+    res.json(enrichedApps);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch user course applications' });
+  }
+});
 
 const PORT = 5000;
 app.listen(PORT, () => {
