@@ -34,6 +34,8 @@ function readDb() {
     if (!parsed.careers) parsed.careers = [];
     if (!parsed.resaleRequests) parsed.resaleRequests = [];
     if (!parsed.resaleHistory) parsed.resaleHistory = [];
+    if (!parsed.paymentRecords) parsed.paymentRecords = [];
+    if (!parsed.adminCommissionSubmissions) parsed.adminCommissionSubmissions = [];
     if (parsed.nextUserId == null) parsed.nextUserId = 1;
     return parsed;
   } catch (e) {
@@ -53,6 +55,70 @@ function readDb() {
 
 function writeDb(db) {
   fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
+}
+
+function ensurePaymentArrays(db) {
+  if (!db.paymentRecords) db.paymentRecords = [];
+  if (!db.adminCommissionSubmissions) db.adminCommissionSubmissions = [];
+}
+
+function getMonthKey(dateValue) {
+  const date = new Date(dateValue);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  return `${year}-${month}`;
+}
+
+function buildMonthlyMap(items, getAmount, getDate) {
+  const map = {};
+  items.forEach(item => {
+    const key = getMonthKey(getDate(item));
+    map[key] = (map[key] || 0) + (Number(getAmount(item)) || 0);
+  });
+  return map;
+}
+
+function toMonthlyHistory(keys, getLabel, valuesByKey) {
+  return keys.map(key => ({
+    month: key,
+    label: getLabel(key),
+    value: Number(valuesByKey[key] || 0),
+  }));
+}
+
+function monthLabel(monthKey) {
+  const [year, month] = monthKey.split('-').map(Number);
+  return new Date(year, month - 1, 1).toLocaleString('en-US', {
+    month: 'long',
+    year: 'numeric',
+  });
+}
+
+function calculateResellerEarning(adminBasePrice, resalePrice) {
+  const base = Number(adminBasePrice || 0);
+  const resale = Number(resalePrice || 0);
+  const addedAmount = Math.max(resale - base, 0);
+  return Number((base * 0.35 + addedAmount).toFixed(2));
+}
+
+function calculateAdminPayablePrice(actualBotPrice) {
+  return Number((Number(actualBotPrice || 0) * 0.65).toFixed(2));
+}
+
+function serializeUserSummary(user) {
+  return {
+    id: user.id,
+    uid: user.uid,
+    email: user.email,
+    name: user.name,
+    status: user.status,
+    kycCompleted: user.kycCompleted,
+    kycStatus: user.kycStatus || 'pending',
+    totalSells: user.totalSells || 0,
+    totalRevenue: user.totalRevenue || 0,
+    referredBy: user.referredBy || null,
+    hasKyc: !!user.kyc,
+  };
 }
 
 // ---------------- USERS + KYC ----------------
@@ -154,6 +220,27 @@ app.post('/api/users/:uid/kyc', (req, res) => {
 app.get('/api/admin/users', (req, res) => {
   const db = readDb();
   res.json(db.users);
+});
+
+app.get('/api/admin/users/:uid/network', (req, res) => {
+  const { uid } = req.params;
+  const db = readDb();
+
+  const user = db.users.find(u => u.uid === uid);
+  if (!user) {
+    return res.status(404).json({ message: 'User not found' });
+  }
+
+  const directReferrals = db.users
+    .filter(u => u.referredBy === uid)
+    .sort((a, b) => a.id - b.id)
+    .map(serializeUserSummary);
+
+  res.json({
+    user: serializeUserSummary(user),
+    referralCount: directReferrals.length,
+    directReferrals,
+  });
 });
 
 app.put('/api/admin/users/:id/approve', (req, res) => {
@@ -324,11 +411,11 @@ app.get('/api/bots/catalog', (req, res) => {
 // Create a bot assignment for a user, using adminBots as source of truth
 app.post('/api/users/:uid/bots', (req, res) => {
   const { uid } = req.params;
-  const { brokerAccountId, botId, signedAgreementUrl } = req.body;
+  const { brokerAccountId, botId, signedAgreementUrl, paymentSlip } = req.body;
 
-  if (!brokerAccountId || !botId || !signedAgreementUrl) {
+  if (!brokerAccountId || !botId || !signedAgreementUrl || !paymentSlip) {
     return res.status(400).json({
-      message: 'brokerAccountId, botId and signedAgreementUrl are required',
+      message: 'brokerAccountId, botId, signedAgreementUrl and paymentSlip are required',
     });
   }
 
@@ -358,10 +445,12 @@ app.post('/api/users/:uid/bots', (req, res) => {
     brokerAccountId,
     botId,
     signedAgreementUrl,
+    paymentSlip,
     botName: adminBot.name,
     botType: adminBot.botType || 'Trading Bot',
     botModel: adminBot.botModel || 'N/A',
     price: adminBot.price,
+    adminBasePrice: adminBot.price,
     broker: account.broker,
     accountNumber: account.accountNumber,
     accountType: account.accountType || 'N/A',
@@ -500,6 +589,7 @@ app.get('/api/admin/bot-requests', (req, res) => {
         accountNumber: b.accountNumber,
         botName: b.botName,
         price: b.price,
+        paymentSlip: b.paymentSlip || null,
         signedAgreementUrl: b.signedAgreementUrl,
         status: b.status || 'pending',
         createdAt: b.createdAt,
@@ -529,6 +619,7 @@ app.get('/api/admin/bot-requests/:id', (req, res) => {
     accountNumber: b.accountNumber,
     botName: b.botName,
     price: b.price,
+    paymentSlip: b.paymentSlip || null,
     signedAgreementUrl: b.signedAgreementUrl,
     status: b.status || 'pending',
     createdAt: b.createdAt,
@@ -540,11 +631,41 @@ app.put('/api/admin/bot-requests/:id/approve', (req, res) => {
   const id = Number(req.params.id);
   const db = readDb();
   ensureBotsArray(db);
+  ensurePaymentArrays(db);
+  ensureNotificationsArray(db);
 
   const b = db.bots.find(x => x.id === id);
   if (!b) return res.status(404).json({ message: 'Bot request not found' });
 
   b.status = 'approved';
+  const user = db.users.find(u => u.uid === b.uid);
+
+  db.paymentRecords.push({
+    id: Date.now(),
+    uid: b.uid,
+    userName: user ? user.name : 'Unknown',
+    botId: b.id,
+    botName: b.botName,
+    amount: Number(b.price) || 0,
+    category: 'admin_bot_purchase',
+    direction: 'to_admin',
+    broker: b.broker,
+    accountNumber: b.accountNumber,
+    paymentSlip: b.paymentSlip || null,
+    createdAt: new Date().toISOString(),
+  });
+
+  if (user) {
+    db.notifications.push({
+      id: Date.now() + 1,
+      uid: user.uid,
+      type: 'admin_bot_purchase_approved',
+      message: `Your bot purchase for "${b.botName}" was approved by admin.`,
+      read: false,
+      createdAt: new Date().toISOString(),
+    });
+  }
+
   writeDb(db);
   res.json({ message: 'Bot request approved', bot: b });
 });
@@ -623,10 +744,19 @@ app.get('/api/bots/resale', (req, res) => {
   let marketplace = db.bots.filter(b => b.isForResale);
 
   if (buyerUid) {
-    const buyer = db.users.find(u => u.uid === buyerUid);
-    if (buyer && buyer.referredBy) {
-      // If buyer was referred, they ONLY see bots from their referrer
-      marketplace = marketplace.filter(b => b.uid === buyer.referredBy);
+    const viewer = db.users.find(u => u.uid === buyerUid);
+    if (viewer) {
+      const hasOwnResaleListings = db.bots.some(
+        b => b.uid === viewer.uid && b.isForResale
+      );
+
+      if (viewer.referredBy) {
+        // Referred users only see bots from their referrer
+        marketplace = marketplace.filter(b => b.uid === viewer.referredBy);
+      } else if (hasOwnResaleListings) {
+        // Resellers only see their own marketplace listings
+        marketplace = marketplace.filter(b => b.uid === viewer.uid);
+      }
     }
   }
 
@@ -647,12 +777,216 @@ function ensureResaleArrays(db) {
   if (!db.resaleHistory) db.resaleHistory = [];
 }
 
+function createAdminCommissionSubmission(db, request, targetBot, buyer, seller) {
+  ensurePaymentArrays(db);
+
+  if (request.adminSubmissionId) {
+    return db.adminCommissionSubmissions.find(
+      item => item.id === request.adminSubmissionId
+    );
+  }
+
+  const adminBasePrice = Number(targetBot.adminBasePrice ?? targetBot.price ?? 0);
+  const adminPayablePrice = calculateAdminPayablePrice(adminBasePrice);
+  const resalePrice = Number(request.price || 0);
+  const resellerEarning = calculateResellerEarning(adminBasePrice, resalePrice);
+  const submission = {
+    id: Date.now() + Math.floor(Math.random() * 1000),
+    requestId: request.id,
+    resellerUid: seller.uid,
+    resellerName: seller.name,
+    resellerEmail: seller.email,
+    buyerUid: buyer.uid,
+    buyerName: buyer.name,
+    botName: request.botName,
+    broker: request.broker,
+    accountNumber: request.accountNumber,
+    amountInAsset: request.amountInAsset,
+    resalePrice,
+    adminBasePrice,
+    adminPayablePrice,
+    commissionAmount: resellerEarning,
+    resellerAdminPaymentSlip: targetBot.paymentSlip || null,
+    customerPaymentSlip: request.paymentSlip,
+    status: 'pending',
+    createdAt: new Date().toISOString(),
+  };
+
+  db.adminCommissionSubmissions.push(submission);
+  request.adminSubmissionId = submission.id;
+  request.sentToAdminAt = submission.createdAt;
+  return submission;
+}
+
+function finalizeResaleApproval(db, request, submission) {
+  ensureBotsArray(db);
+  ensureResaleArrays(db);
+  ensurePaymentArrays(db);
+  ensureNotificationsArray(db);
+
+  const targetBot = db.bots.find(b => b.id === request.botInstanceId);
+  if (!targetBot) return { error: 'Original bot instance not found' };
+
+  const buyer = db.users.find(u => u.uid === request.buyerUid);
+  const seller = db.users.find(u => u.uid === request.sellerUid);
+  if (!buyer || !seller) return { error: 'Buyer or seller not found' };
+  const resellerEarning = calculateResellerEarning(
+    targetBot.adminBasePrice ?? targetBot.price ?? 0,
+    request.price
+  );
+  const adminPayablePrice = calculateAdminPayablePrice(
+    targetBot.adminBasePrice ?? targetBot.price ?? 0
+  );
+
+  let buyerAccount = db.accounts.find(
+    a =>
+      a.uid === request.buyerUid &&
+      a.broker === request.broker &&
+      a.accountNumber === request.accountNumber
+  );
+
+  if (!buyerAccount) {
+    buyerAccount = {
+      id: Date.now() + Math.floor(Math.random() * 1000),
+      uid: request.buyerUid,
+      broker: request.broker,
+      accountType: 'Marketplace Purchase',
+      accountNumber: request.accountNumber,
+    };
+    db.accounts.push(buyerAccount);
+  }
+
+  seller.totalSells = (seller.totalSells || 0) + 1;
+  seller.totalRevenue = (seller.totalRevenue || 0) + resellerEarning;
+
+  const newBotInstance = {
+    ...targetBot,
+    id: Date.now() + Math.floor(Math.random() * 1000),
+    uid: request.buyerUid,
+    brokerAccountId: buyerAccount.id,
+    broker: buyerAccount.broker,
+    accountNumber: buyerAccount.accountNumber,
+    accountType: buyerAccount.accountType || 'Marketplace Purchase',
+    isForResale: false,
+    resalePrice: null,
+    price: request.price,
+    amountInAsset: request.amountInAsset,
+    boughtFrom: seller.name,
+    status: 'approved',
+    createdAt: new Date().toISOString(),
+  };
+
+  db.bots.push(newBotInstance);
+
+  db.paymentRecords.push({
+    id: Date.now() + 10,
+    uid: buyer.uid,
+    userName: buyer.name,
+    botId: newBotInstance.id,
+    botName: targetBot.botName,
+    amount: Number(request.price) || 0,
+    category: 'resale_customer_payment',
+    direction: 'to_reseller',
+    broker: request.broker,
+    accountNumber: request.accountNumber,
+    paymentSlip: request.paymentSlip,
+    createdAt: new Date().toISOString(),
+  });
+
+  db.paymentRecords.push({
+    id: Date.now() + 20,
+    uid: seller.uid,
+    userName: seller.name,
+    botId: targetBot.id,
+    botName: targetBot.botName,
+    amount: Number(request.price) || 0,
+    category: 'resale_client_payment',
+    direction: 'to_reseller',
+    broker: request.broker,
+    accountNumber: request.accountNumber,
+    paymentSlip: request.paymentSlip,
+    createdAt: new Date().toISOString(),
+  });
+
+  db.paymentRecords.push({
+    id: Date.now() + 30,
+    uid: seller.uid,
+    userName: seller.name,
+    botId: targetBot.id,
+    botName: targetBot.botName,
+    amount: adminPayablePrice,
+    category: 'resale_admin_payment',
+    direction: 'to_admin',
+    broker: request.broker,
+    accountNumber: request.accountNumber,
+    paymentSlip: submission.resellerAdminPaymentSlip,
+    createdAt: new Date().toISOString(),
+  });
+
+  db.resaleHistory.push({
+    id: Date.now() + 50,
+    requestId: request.id,
+    botName: targetBot.botName,
+    sellerUid: seller.uid,
+    sellerName: seller.name,
+    buyerUid: buyer.uid,
+    buyerName: buyer.name,
+    price: request.price,
+    adminBasePrice: Number(targetBot.adminBasePrice ?? targetBot.price ?? 0),
+    adminPayablePrice,
+    profit: resellerEarning,
+    broker: request.broker,
+    accountNumber: request.accountNumber,
+    amountInAsset: request.amountInAsset,
+    adminPaymentSlip: submission.resellerAdminPaymentSlip,
+    date: new Date().toISOString()
+  });
+
+  request.status = 'approved';
+  submission.status = 'approved';
+  submission.approvedAt = new Date().toISOString();
+
+  db.notifications.push({
+    id: Date.now() + 1,
+    uid: seller.uid,
+    type: 'bot_sold',
+    message: `Admin approved your sale for "${targetBot.botName}". Profit: $${resellerEarning}.`,
+    read: false,
+    createdAt: new Date().toISOString()
+  });
+
+  db.notifications.push({
+    id: Date.now() + 2,
+    uid: buyer.uid,
+    type: 'bot_purchased',
+    message: `Admin approved your request for "${targetBot.botName}" and the bot is now in My Bots.`,
+    read: false,
+    createdAt: new Date().toISOString()
+  });
+
+  return { request, submission };
+}
+
 // User: Request to purchase a bot from resale marketplace
 app.post('/api/bots/resale/request', (req, res) => {
-  const { uid, botInstanceId, paymentSlip, brokerAccountId } = req.body;
+  const {
+    uid,
+    botInstanceId,
+    paymentSlip,
+    broker,
+    accountNumber,
+    amountInAsset,
+  } = req.body;
 
-  if (!uid || !botInstanceId || !paymentSlip || !brokerAccountId) {
-    return res.status(400).json({ message: 'Missing required fields: uid, botInstanceId, paymentSlip, brokerAccountId' });
+  if (!uid || !botInstanceId || !paymentSlip || !broker || !accountNumber || amountInAsset == null) {
+    return res.status(400).json({
+      message:
+        'Missing required fields: uid, botInstanceId, broker, accountNumber, amountInAsset, paymentSlip',
+    });
+  }
+
+  if (Number(amountInAsset) < 0) {
+    return res.status(400).json({ message: 'amountInAsset must be zero or greater' });
   }
 
   const db = readDb();
@@ -679,9 +1013,13 @@ app.post('/api/bots/resale/request', (req, res) => {
     buyerName: buyer.name,
     botName: targetBot.botName,
     price: targetBot.resalePrice,
+    broker,
+    accountNumber,
+    amountInAsset: Number(amountInAsset),
     paymentSlip,
-    brokerAccountId: Number(brokerAccountId),
     status: 'pending',
+    adminSubmissionId: null,
+    sentToAdminAt: null,
     createdAt: new Date().toISOString(),
   };
 
@@ -697,14 +1035,62 @@ app.get('/api/users/:uid/seller-requests', (req, res) => {
   const db = readDb();
   ensureResaleArrays(db);
 
-  const myRequests = db.resaleRequests.filter(r => r.sellerUid === uid);
+  const myRequests = db.resaleRequests
+    .filter(r => r.sellerUid === uid)
+    .map(request => {
+      const targetBot = db.bots.find(b => b.id === request.botInstanceId);
+      return {
+        ...request,
+        adminBasePrice: Number(targetBot?.adminBasePrice ?? targetBot?.price ?? 0),
+        adminPayablePrice: calculateAdminPayablePrice(
+          Number(targetBot?.adminBasePrice ?? targetBot?.price ?? 0)
+        ),
+      };
+    });
   res.json(myRequests);
+});
+
+app.post('/api/bots/resale/requests/:requestId/send-to-admin', (req, res) => {
+  const { requestId } = req.params;
+  const { adminPaymentSlip } = req.body;
+  const db = readDb();
+  ensureResaleArrays(db);
+  ensureBotsArray(db);
+  ensurePaymentArrays(db);
+
+  const request = db.resaleRequests.find(r => r.id === Number(requestId));
+  if (!request) return res.status(404).json({ message: 'Request not found' });
+  if (request.status !== 'pending') {
+    return res.status(400).json({ message: 'Request already processed' });
+  }
+
+  const targetBot = db.bots.find(b => b.id === request.botInstanceId);
+  if (!targetBot) {
+    return res.status(404).json({ message: 'Original bot instance not found' });
+  }
+
+  const buyer = db.users.find(u => u.uid === request.buyerUid);
+  const seller = db.users.find(u => u.uid === request.sellerUid);
+  if (!buyer || !seller) {
+    return res.status(404).json({ message: 'Buyer or seller not found' });
+  }
+
+  if (!adminPaymentSlip) {
+    return res.status(400).json({ message: 'adminPaymentSlip is required' });
+  }
+
+  const submission = createAdminCommissionSubmission(db, request, targetBot, buyer, seller);
+  submission.resellerAdminPaymentSlip = adminPaymentSlip;
+  submission.status = 'pending';
+  request.status = 'pending_admin';
+  writeDb(db);
+  res.json({ message: 'Sent to admin for approval', submission, request });
 });
 
 // User: Approve or Decline resale request
 app.post('/api/bots/resale/requests/:requestId/status', (req, res) => {
   const { requestId } = req.params;
-  const { status } = req.body; // 'approved' | 'rejected'
+  const { status, adminPaymentSlip } = req.body; // 'approved' | 'rejected'
 
   if (!['approved', 'rejected'].includes(status)) {
     return res.status(400).json({ message: 'Invalid status' });
@@ -713,6 +1099,7 @@ app.post('/api/bots/resale/requests/:requestId/status', (req, res) => {
   const db = readDb();
   ensureResaleArrays(db);
   ensureBotsArray(db);
+  ensureNotificationsArray(db);
 
   const request = db.resaleRequests.find(r => r.id === Number(requestId));
   if (!request) return res.status(404).json({ message: 'Request not found' });
@@ -721,76 +1108,46 @@ app.post('/api/bots/resale/requests/:requestId/status', (req, res) => {
     return res.status(400).json({ message: 'Request already processed' });
   }
 
-  request.status = status;
-
   if (status === 'approved') {
-    const targetBot = db.bots.find(b => b.id === request.botInstanceId);
-    if (!targetBot) return res.status(404).json({ message: 'Original bot instance not found' });
-
-    const buyer = db.users.find(u => u.uid === request.buyerUid);
-    const seller = db.users.find(u => u.uid === request.sellerUid);
-    const buyerAccount = db.accounts.find(a => a.id === request.brokerAccountId && a.uid === request.buyerUid);
-
-    if (buyer && seller && buyerAccount) {
-      // Update seller stats
-      seller.totalSells = (seller.totalSells || 0) + 1;
-      seller.totalRevenue = (seller.totalRevenue || 0) + request.price;
-
-      // CLONE bot instead of transferring (Seller keeps theirs, buyer gets a copy)
-      const newBotInstance = {
-        ...targetBot,
-        id: Date.now() + Math.floor(Math.random() * 1000),
-        uid: request.buyerUid,
-        brokerAccountId: request.brokerAccountId,
-        broker: buyerAccount.broker,
-        accountNumber: buyerAccount.accountNumber,
-        isForResale: false,
-        resalePrice: null,
-        price: request.price,
-        boughtFrom: seller.name,
-        status: 'approved',
-        createdAt: new Date().toISOString(),
-      };
-
-      db.bots.push(newBotInstance);
-
-      // Add to history
-      db.resaleHistory.push({
-        id: Date.now() + 50,
-        requestId: request.id,
-        botName: targetBot.botName,
-        sellerUid: seller.uid,
-        sellerName: seller.name,
-        buyerUid: buyer.uid,
-        buyerName: buyer.name,
-        price: request.price,
-        date: new Date().toISOString()
-      });
-
-      // Notify seller
-      ensureNotificationsArray(db);
-      db.notifications.push({
-        id: Date.now() + 1,
-        uid: seller.uid,
-        type: 'bot_sold',
-        message: `Your sale for "${targetBot.botName}" was approved. You earned $${request.price}.`,
-        read: false,
-        createdAt: new Date().toISOString()
-      });
-
-      // Notify buyer
-      db.notifications.push({
-        id: Date.now() + 2,
-        uid: buyer.uid,
-        type: 'bot_purchased',
-        message: `Your request for "${targetBot.botName}" was approved by the seller.`,
-        read: false,
-        createdAt: new Date().toISOString()
+    if (!adminPaymentSlip) {
+      return res.status(400).json({
+        message: 'adminPaymentSlip is required to approve a resale request',
       });
     }
+    const targetBot = db.bots.find(b => b.id === request.botInstanceId);
+    if (!targetBot) return res.status(404).json({ message: 'Original bot instance not found' });
+    const buyer = db.users.find(u => u.uid === request.buyerUid);
+    const seller = db.users.find(u => u.uid === request.sellerUid);
+    if (!buyer || !seller) {
+      return res.status(404).json({ message: 'Buyer or seller not found' });
+    }
+
+    const submission = createAdminCommissionSubmission(db, request, targetBot, buyer, seller);
+    submission.resellerAdminPaymentSlip = adminPaymentSlip;
+    submission.status = 'pending';
+    submission.updatedAt = new Date().toISOString();
+    request.status = 'pending_admin';
+
+    db.notifications.push({
+      id: Date.now() + 1,
+      uid: seller.uid,
+      type: 'resale_pending_admin',
+      message: `Your sale for "${request.botName}" was sent to admin for final approval.`,
+      read: false,
+      createdAt: new Date().toISOString()
+    });
+
+    db.notifications.push({
+      id: Date.now() + 2,
+      uid: buyer.uid,
+      type: 'resale_pending_admin',
+      message: `Your request for "${request.botName}" is waiting for admin approval.`,
+      read: false,
+      createdAt: new Date().toISOString()
+    });
   } else {
     // Rejected: Notify buyer
-    ensureNotificationsArray(db);
+    request.status = 'rejected';
     db.notifications.push({
       id: Date.now() + 3,
       uid: request.buyerUid,
@@ -802,7 +1159,13 @@ app.post('/api/bots/resale/requests/:requestId/status', (req, res) => {
   }
 
   writeDb(db);
-  res.json({ message: `Request ${status}`, request });
+  res.json({
+    message:
+      status === 'approved'
+        ? 'Request sent to admin for approval'
+        : 'Request rejected',
+    request,
+  });
 });
 
 // User: Get sale history (as seller)
@@ -819,6 +1182,232 @@ app.get('/api/admin/resale-history', (req, res) => {
   const db = readDb();
   ensureResaleArrays(db);
   res.json(db.resaleHistory || []);
+});
+
+app.get('/api/admin/resale-approvals', (req, res) => {
+  const db = readDb();
+  ensurePaymentArrays(db);
+  const submissions = [...db.adminCommissionSubmissions].sort(
+    (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+  );
+  res.json(submissions);
+});
+
+app.get('/api/admin/resale-approvals/:id', (req, res) => {
+  const id = Number(req.params.id);
+  const db = readDb();
+  ensurePaymentArrays(db);
+  const submission = db.adminCommissionSubmissions.find(item => item.id === id);
+  if (!submission) {
+    return res.status(404).json({ message: 'Resale approval not found' });
+  }
+  res.json(submission);
+});
+
+app.put('/api/admin/resale-approvals/:id/approve', (req, res) => {
+  const id = Number(req.params.id);
+  const db = readDb();
+  ensurePaymentArrays(db);
+  ensureResaleArrays(db);
+
+  const submission = db.adminCommissionSubmissions.find(item => item.id === id);
+  if (!submission) {
+    return res.status(404).json({ message: 'Resale approval not found' });
+  }
+  if (submission.status !== 'pending') {
+    return res.status(400).json({ message: 'Submission already processed' });
+  }
+
+  const request = db.resaleRequests.find(item => item.id === submission.requestId);
+  if (!request) {
+    return res.status(404).json({ message: 'Linked resale request not found' });
+  }
+
+  const result = finalizeResaleApproval(db, request, submission);
+  if (result.error) {
+    return res.status(400).json({ message: result.error });
+  }
+
+  writeDb(db);
+  res.json({ message: 'Resale approved', submission, request });
+});
+
+app.put('/api/admin/resale-approvals/:id/reject', (req, res) => {
+  const id = Number(req.params.id);
+  const db = readDb();
+  ensurePaymentArrays(db);
+  ensureResaleArrays(db);
+  ensureNotificationsArray(db);
+
+  const submission = db.adminCommissionSubmissions.find(item => item.id === id);
+  if (!submission) {
+    return res.status(404).json({ message: 'Resale approval not found' });
+  }
+  if (submission.status !== 'pending') {
+    return res.status(400).json({ message: 'Submission already processed' });
+  }
+
+  const request = db.resaleRequests.find(item => item.id === submission.requestId);
+  if (request) {
+    request.status = 'rejected';
+  }
+  submission.status = 'rejected';
+  submission.rejectedAt = new Date().toISOString();
+
+  db.notifications.push({
+    id: Date.now() + 1,
+    uid: submission.resellerUid,
+    type: 'resale_admin_rejected',
+    message: `Admin rejected the resale submission for "${submission.botName}".`,
+    read: false,
+    createdAt: new Date().toISOString()
+  });
+
+  db.notifications.push({
+    id: Date.now() + 2,
+    uid: submission.buyerUid,
+    type: 'resale_admin_rejected',
+    message: `Admin rejected your request for "${submission.botName}".`,
+    read: false,
+    createdAt: new Date().toISOString()
+  });
+
+  writeDb(db);
+  res.json({ message: 'Resale rejected', submission, request });
+});
+
+app.get('/api/users/:uid/dashboard-payments', (req, res) => {
+  const { uid } = req.params;
+  const db = readDb();
+  ensurePaymentArrays(db);
+  ensureResaleArrays(db);
+
+  const user = db.users.find(u => u.uid === uid);
+  if (!user) return res.status(404).json({ message: 'User not found' });
+
+  const payments = db.paymentRecords
+    .filter(record => record.uid === uid)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  const adminPurchases = payments.filter(
+    record =>
+      record.category === 'admin_bot_purchase' ||
+      record.category === 'resale_admin_payment'
+  );
+  const clientPayments = payments.filter(
+    record => record.category === 'resale_client_payment'
+  );
+  const customerPayments = payments.filter(
+    record => record.category === 'resale_customer_payment'
+  );
+
+  const commissionSubmissions = db.adminCommissionSubmissions
+    .filter(item => item.resellerUid === uid || item.buyerUid === uid)
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  const resellerHistory = db.resaleHistory.filter(item => item.sellerUid === uid);
+  const months = Array.from(
+    new Set([
+      ...payments.map(item => getMonthKey(item.createdAt)),
+      ...resellerHistory.map(item => getMonthKey(item.date)),
+    ])
+  ).sort((a, b) => b.localeCompare(a));
+  const currentMonth = months[0] || getMonthKey(new Date());
+
+  const adminPaymentsByMonth = buildMonthlyMap(adminPurchases, item => item.amount, item => item.createdAt);
+  const clientPaymentsByMonth = buildMonthlyMap(clientPayments, item => item.amount, item => item.createdAt);
+  const profitsByMonth = buildMonthlyMap(resellerHistory, item => item.profit, item => item.date);
+
+  res.json({
+    summary: {
+      adminPaymentsTotal: adminPurchases.reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
+      clientPaymentsTotal: clientPayments.reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
+      customerPaymentsTotal: customerPayments.reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
+      commissionTotal: commissionSubmissions.reduce(
+        (sum, item) => sum + (Number(item.commissionAmount) || 0),
+        0
+      ),
+    },
+    currentMonth,
+    monthOptions: months.map(month => ({ value: month, label: monthLabel(month) })),
+    monthly: {
+      adminPayments: adminPaymentsByMonth,
+      clientPayments: clientPaymentsByMonth,
+      profits: profitsByMonth,
+    },
+    monthlyHistory: {
+      adminPayments: toMonthlyHistory(months, monthLabel, adminPaymentsByMonth),
+      clientPayments: toMonthlyHistory(months, monthLabel, clientPaymentsByMonth),
+      profits: toMonthlyHistory(months, monthLabel, profitsByMonth),
+    },
+    adminPurchases,
+    clientPayments,
+    customerPayments,
+    commissionSubmissions,
+  });
+});
+
+app.get('/api/admin/dashboard-payments', (req, res) => {
+  const db = readDb();
+  ensurePaymentArrays(db);
+
+  const adminPurchases = db.paymentRecords
+    .filter(
+      record =>
+        record.category === 'admin_bot_purchase' ||
+        record.category === 'resale_admin_payment'
+    )
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  const clientPayments = db.paymentRecords
+    .filter(record => record.category === 'resale_customer_payment')
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+
+  const commissionSubmissions = [...db.adminCommissionSubmissions].sort(
+    (a, b) => new Date(b.createdAt) - new Date(a.createdAt)
+  );
+
+  const months = Array.from(
+    new Set([
+      ...adminPurchases.map(item => getMonthKey(item.createdAt)),
+      ...clientPayments.map(item => getMonthKey(item.createdAt)),
+      ...commissionSubmissions.map(item => getMonthKey(item.createdAt)),
+    ])
+  ).sort((a, b) => b.localeCompare(a));
+  const currentMonth = months[0] || getMonthKey(new Date());
+  const adminPaymentsByMonth = buildMonthlyMap(adminPurchases, item => item.amount, item => item.createdAt);
+  const clientPaymentsByMonth = buildMonthlyMap(clientPayments, item => item.amount, item => item.createdAt);
+  const commissionsByMonth = buildMonthlyMap(
+    commissionSubmissions,
+    item => item.commissionAmount,
+    item => item.createdAt
+  );
+
+  res.json({
+    summary: {
+      adminPaymentsTotal: adminPurchases.reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
+      clientPaymentsTotal: clientPayments.reduce((sum, item) => sum + (Number(item.amount) || 0), 0),
+      commissionTotal: commissionSubmissions.reduce(
+        (sum, item) => sum + (Number(item.commissionAmount) || 0),
+        0
+      ),
+    },
+    currentMonth,
+    monthOptions: months.map(month => ({ value: month, label: monthLabel(month) })),
+    monthly: {
+      adminPayments: adminPaymentsByMonth,
+      clientPayments: clientPaymentsByMonth,
+      commissions: commissionsByMonth,
+    },
+    monthlyHistory: {
+      adminPayments: toMonthlyHistory(months, monthLabel, adminPaymentsByMonth),
+      clientPayments: toMonthlyHistory(months, monthLabel, clientPaymentsByMonth),
+      commissions: toMonthlyHistory(months, monthLabel, commissionsByMonth),
+    },
+    adminPurchases,
+    clientPayments,
+    commissionSubmissions,
+  });
 });
 
 // (Old direct purchase logic removed in favor of request/approve workflow)
@@ -1143,21 +1732,15 @@ app.put('/api/users/:uid/notifications/:notifId/read', (req, res) => {
   }
 });
 
-app.put('/api/users/:uid/notifications/read-all', (req, res) => {
+app.delete('/api/users/:uid/notifications', (req, res) => {
   try {
     const db = readDb();
     ensureNotificationsArray(db);
-    let updated = false;
-    db.notifications.forEach(n => {
-      if (n.uid === req.params.uid && !n.read) {
-        n.read = true;
-        updated = true;
-      }
-    });
-    if (updated) writeDb(db);
-    res.json({ success: true });
+    db.notifications = db.notifications.filter(n => n.uid !== req.params.uid);
+    writeDb(db);
+    res.json({ success: true, deleted: true });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to clear all notifications' });
+    res.status(500).json({ error: 'Failed to delete notifications' });
   }
 });
 
