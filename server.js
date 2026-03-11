@@ -50,17 +50,66 @@ function applyDbDefaults(db = {}) {
   return normalized;
 }
 
+function normalizePrivateKey(rawKey) {
+  if (!rawKey || typeof rawKey !== 'string') return '';
+  const trimmed = rawKey.trim();
+  const unwrapped =
+    (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+    (trimmed.startsWith("'") && trimmed.endsWith("'"))
+      ? trimmed.slice(1, -1)
+      : trimmed;
+  return unwrapped.replace(/\\n/g, '\n');
+}
+
+function buildCredentialFromServiceAccount(serviceAccount) {
+  if (!serviceAccount?.project_id || !serviceAccount?.client_email || !serviceAccount?.private_key) {
+    return null;
+  }
+
+  return {
+    credential: cert({
+      projectId: serviceAccount.project_id,
+      clientEmail: serviceAccount.client_email,
+      privateKey: normalizePrivateKey(serviceAccount.private_key),
+    }),
+  };
+}
+
 function getFirebaseCredentialConfig() {
-  const projectId = process.env.FIREBASE_PROJECT_ID;
+  // Render-friendly option: full service account JSON in a single env var
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+    try {
+      const parsed = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+      const fromJson = buildCredentialFromServiceAccount(parsed);
+      if (fromJson) return fromJson;
+    } catch (error) {
+      console.error('FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON:', error.message);
+    }
+  }
+
+  // Alternate option: base64-encoded service account JSON
+  if (process.env.FIREBASE_SERVICE_ACCOUNT_BASE64) {
+    try {
+      const json = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 'base64').toString('utf8');
+      const parsed = JSON.parse(json);
+      const fromBase64 = buildCredentialFromServiceAccount(parsed);
+      if (fromBase64) return fromBase64;
+    } catch (error) {
+      console.error('FIREBASE_SERVICE_ACCOUNT_BASE64 is invalid:', error.message);
+    }
+  }
+
+  // Split env vars option
+  const projectId = process.env.FIREBASE_PROJECT_ID || process.env.FIREBASE_PROJECTID;
   const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
-  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
+  const privateKey = normalizePrivateKey(process.env.FIREBASE_PRIVATE_KEY);
 
   if (projectId && clientEmail && privateKey) {
     return {
       credential: cert({
         projectId,
         clientEmail,
-        privateKey: privateKey.replace(/\\n/g, '\n'),
+        privateKey,
       }),
     };
   }
@@ -83,7 +132,7 @@ function initializeFirebaseAdmin() {
   }
 
   throw new Error(
-    'Missing Firebase credentials. Set GOOGLE_APPLICATION_CREDENTIALS or FIREBASE_PROJECT_ID/FIREBASE_CLIENT_EMAIL/FIREBASE_PRIVATE_KEY.'
+    'Missing Firebase credentials. Set FIREBASE_SERVICE_ACCOUNT_JSON, FIREBASE_SERVICE_ACCOUNT_BASE64, GOOGLE_APPLICATION_CREDENTIALS, or FIREBASE_PROJECT_ID/FIREBASE_CLIENT_EMAIL/FIREBASE_PRIVATE_KEY.'
   );
 }
 
