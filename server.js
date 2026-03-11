@@ -76,26 +76,36 @@ function buildCredentialFromServiceAccount(serviceAccount) {
 }
 
 function getFirebaseCredentialConfig() {
+  const serviceAccountJsonRaw =
+    process.env.FIREBASE_SERVICE_ACCOUNT_JSON ||
+    process.env.FIREBASE_SERVICE_ACCOUNT ||
+    process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
+
   // Render-friendly option: full service account JSON in a single env var
-  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+  if (serviceAccountJsonRaw) {
     try {
-      const parsed = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+      const parsed = JSON.parse(serviceAccountJsonRaw);
       const fromJson = buildCredentialFromServiceAccount(parsed);
       if (fromJson) return fromJson;
     } catch (error) {
-      console.error('FIREBASE_SERVICE_ACCOUNT_JSON is not valid JSON:', error.message);
+      console.error('Service account JSON env is not valid JSON:', error.message);
     }
   }
 
   // Alternate option: base64-encoded service account JSON
-  if (process.env.FIREBASE_SERVICE_ACCOUNT_BASE64) {
+  const serviceAccountBase64Raw =
+    process.env.FIREBASE_SERVICE_ACCOUNT_BASE64 ||
+    process.env.FIREBASE_SERVICE_ACCOUNT_B64 ||
+    process.env.GOOGLE_SERVICE_ACCOUNT_BASE64;
+
+  if (serviceAccountBase64Raw) {
     try {
-      const json = Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, 'base64').toString('utf8');
+      const json = Buffer.from(serviceAccountBase64Raw, 'base64').toString('utf8');
       const parsed = JSON.parse(json);
       const fromBase64 = buildCredentialFromServiceAccount(parsed);
       if (fromBase64) return fromBase64;
     } catch (error) {
-      console.error('FIREBASE_SERVICE_ACCOUNT_BASE64 is invalid:', error.message);
+      console.error('Service account base64 env is invalid:', error.message);
     }
   }
 
