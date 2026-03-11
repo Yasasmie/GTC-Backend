@@ -168,6 +168,11 @@ function writeDb(db) {
     });
 }
 
+async function writeDbAndWait(db) {
+  writeDb(db);
+  await persistQueue;
+}
+
 async function loadDbFromFirestore() {
   const snapshot = await dbRef.get();
   if (!snapshot.exists) {
@@ -1863,6 +1868,33 @@ app.delete('/api/users/:uid/notifications', (req, res) => {
     res.json({ success: true, deleted: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete notifications' });
+  }
+});
+
+// ---------------- ADMIN MAINTENANCE ----------------
+
+app.post('/api/admin/reset-data', async (req, res) => {
+  try {
+    const token = req.headers['x-admin-reset-token'];
+    const expected = process.env.ADMIN_RESET_TOKEN;
+
+    // Require token when configured to avoid accidental public resets.
+    if (expected && token !== expected) {
+      return res.status(401).json({ message: 'Unauthorized reset token' });
+    }
+
+    const emptyDb = createInitialDb();
+    await writeDbAndWait(emptyDb);
+
+    res.json({
+      success: true,
+      message: 'All application data has been reset',
+      collection: FIRESTORE_COLLECTION,
+      document: FIRESTORE_DOC,
+    });
+  } catch (error) {
+    console.error('Failed to reset data:', error);
+    res.status(500).json({ message: 'Failed to reset data' });
   }
 });
 
