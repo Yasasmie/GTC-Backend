@@ -1,7 +1,7 @@
 {
   "name": "gtc-backend",
   "version": "1.0.0",
-  "description": "Asset Farm backend API (Express + JSON file storage)",
+  "description": "Asset Farm backend API (Express + Firestore storage)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
@@ -13,7 +13,9 @@
   "license": "ISC",
   "dependencies": {
     "cors": "^2.8.6",
-    "express": "^5.2.1"
+    "dotenv": "^17.2.3",
+    "express": "^5.2.1",
+    "firebase-admin": "^13.6.0"
   },
   "devDependencies": {
     "nodemon": "^3.1.11"

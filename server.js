@@ -1,60 +1,123 @@
 // backend/server.js
 const express = require('express');
 const cors = require('cors');
-const fs = require('fs');
-const path = require('path');
+const { initializeApp, cert, getApps } = require('firebase-admin/app');
+const { getFirestore } = require('firebase-admin/firestore');
+require('dotenv').config();
 
 const app = express();
 app.use(cors());
 app.use(express.json({ limit: '10mb' })); // allow base64 images
 
-const DB_PATH = path.join(__dirname, 'db.json');
+function createInitialDb() {
+  return {
+    users: [],
+    accounts: [],
+    bots: [],
+    adminBots: [],
+    careers: [],
+    resaleRequests: [],
+    resaleHistory: [],
+    paymentRecords: [],
+    adminCommissionSubmissions: [],
+    courses: [],
+    courseApplications: [],
+    notifications: [],
+    nextUserId: 1,
+  };
+}
+
+function applyDbDefaults(db = {}) {
+  const initial = createInitialDb();
+  const normalized = { ...initial, ...db };
+
+  if (!Array.isArray(normalized.users)) normalized.users = [];
+  if (!Array.isArray(normalized.accounts)) normalized.accounts = [];
+  if (!Array.isArray(normalized.bots)) normalized.bots = [];
+  if (!Array.isArray(normalized.adminBots)) normalized.adminBots = [];
+  if (!Array.isArray(normalized.careers)) normalized.careers = [];
+  if (!Array.isArray(normalized.resaleRequests)) normalized.resaleRequests = [];
+  if (!Array.isArray(normalized.resaleHistory)) normalized.resaleHistory = [];
+  if (!Array.isArray(normalized.paymentRecords)) normalized.paymentRecords = [];
+  if (!Array.isArray(normalized.adminCommissionSubmissions)) normalized.adminCommissionSubmissions = [];
+  if (!Array.isArray(normalized.courses)) normalized.courses = [];
+  if (!Array.isArray(normalized.courseApplications)) normalized.courseApplications = [];
+  if (!Array.isArray(normalized.notifications)) normalized.notifications = [];
+  if (typeof normalized.nextUserId !== 'number' || normalized.nextUserId < 1) {
+    normalized.nextUserId = 1;
+  }
+
+  return normalized;
+}
+
+function getFirebaseCredentialConfig() {
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const clientEmail = process.env.FIREBASE_CLIENT_EMAIL;
+  const privateKey = process.env.FIREBASE_PRIVATE_KEY;
+
+  if (projectId && clientEmail && privateKey) {
+    return {
+      credential: cert({
+        projectId,
+        clientEmail,
+        privateKey: privateKey.replace(/\\n/g, '\n'),
+      }),
+    };
+  }
+
+  return null;
+}
+
+function initializeFirebaseAdmin() {
+  if (getApps().length > 0) {
+    return getApps()[0];
+  }
+
+  const credentialConfig = getFirebaseCredentialConfig();
+  if (credentialConfig) {
+    return initializeApp(credentialConfig);
+  }
+
+  if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
+    return initializeApp();
+  }
+
+  throw new Error(
+    'Missing Firebase credentials. Set GOOGLE_APPLICATION_CREDENTIALS or FIREBASE_PROJECT_ID/FIREBASE_CLIENT_EMAIL/FIREBASE_PRIVATE_KEY.'
+  );
+}
+
+const firebaseApp = initializeFirebaseAdmin();
+const firestore = getFirestore(firebaseApp);
+const FIRESTORE_COLLECTION = process.env.FIRESTORE_COLLECTION || 'gtc';
+const FIRESTORE_DOC = process.env.FIRESTORE_DOC || 'appData';
+const dbRef = firestore.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC);
+
+let dbCache = createInitialDb();
+let persistQueue = Promise.resolve();
 
 function readDb() {
-  if (!fs.existsSync(DB_PATH)) {
-    const initial = {
-      users: [],
-      accounts: [],
-      bots: [],
-      adminBots: [],
-      careers: [],
-      nextUserId: 1,
-    };
-    fs.writeFileSync(DB_PATH, JSON.stringify(initial, null, 2), 'utf8');
-    return initial;
-  }
-
-  const raw = fs.readFileSync(DB_PATH, 'utf8');
-  try {
-    const parsed = JSON.parse(raw);
-    // ensure new arrays exist if db was created earlier
-    if (!parsed.accounts) parsed.accounts = [];
-    if (!parsed.bots) parsed.bots = [];
-    if (!parsed.adminBots) parsed.adminBots = [];
-    if (!parsed.careers) parsed.careers = [];
-    if (!parsed.resaleRequests) parsed.resaleRequests = [];
-    if (!parsed.resaleHistory) parsed.resaleHistory = [];
-    if (!parsed.paymentRecords) parsed.paymentRecords = [];
-    if (!parsed.adminCommissionSubmissions) parsed.adminCommissionSubmissions = [];
-    if (parsed.nextUserId == null) parsed.nextUserId = 1;
-    return parsed;
-  } catch (e) {
-    console.error('Failed to parse db.json, reinitializing.', e);
-    const initial = {
-      users: [],
-      accounts: [],
-      bots: [],
-      adminBots: [],
-      careers: [],
-      nextUserId: 1,
-    };
-    fs.writeFileSync(DB_PATH, JSON.stringify(initial, null, 2), 'utf8');
-    return initial;
-  }
+  return JSON.parse(JSON.stringify(dbCache));
 }
 
 function writeDb(db) {
-  fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf8');
+  dbCache = applyDbDefaults(db);
+  persistQueue = persistQueue
+    .then(() => dbRef.set(dbCache))
+    .catch((error) => {
+      console.error('Failed to persist data to Firestore:', error);
+    });
+}
+
+async function loadDbFromFirestore() {
+  const snapshot = await dbRef.get();
+  if (!snapshot.exists) {
+    dbCache = createInitialDb();
+    await dbRef.set(dbCache);
+    return;
+  }
+
+  dbCache = applyDbDefaults(snapshot.data());
 }
 
 function ensurePaymentArrays(db) {
@@ -1774,7 +1837,18 @@ app.get('/api/users/:uid/course-applications', (req, res) => {
   }
 });
 
-const PORT = 5000;
-app.listen(PORT, () => {
-  console.log(`Backend API running on port ${PORT}`);
-});
+const PORT = Number(process.env.PORT || 5000);
+
+async function startServer() {
+  try {
+    await loadDbFromFirestore();
+    app.listen(PORT, () => {
+      console.log(`Backend API running on port ${PORT}`);
+    });
+  } catch (error) {
+    console.error('Failed to initialize Firestore persistence:', error);
+    process.exit(1);
+  }
+}
+
+startServer();
