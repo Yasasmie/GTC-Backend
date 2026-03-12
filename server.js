@@ -737,21 +737,26 @@ app.post('/api/admin/bots', async (req, res) => {
 
 // Update bot
 app.put('/api/admin/bots/:id', async (req, res) => {
-  const id = Number(req.params.id);
-  const { name, price, cost, subscriptionFee } = req.body;
+  try {
+    const id = Number(req.params.id);
+    const { name, price, cost, subscriptionFee } = req.body;
 
-  const adminBots = await getAdminBotsStore();
-  const bot = adminBots.find(b => b.id === id);
-  if (!bot) return res.status(404).json({ message: 'Bot not found' });
+    const adminBots = await getAdminBotsStore();
+    const bot = adminBots.find(b => b.id === id);
+    if (!bot) return res.status(404).json({ message: 'Bot not found' });
 
-  bot.name = name ?? bot.name;
-  bot.price = price ?? bot.price;
-  bot.cost = cost ?? bot.cost;
-  bot.subscriptionFee = subscriptionFee ?? bot.subscriptionFee;
+    bot.name = name ?? bot.name;
+    bot.price = price ?? bot.price;
+    bot.cost = cost ?? bot.cost;
+    bot.subscriptionFee = subscriptionFee ?? bot.subscriptionFee;
 
-  await writeDbAndWait(db);
+    await saveAdminBotsStore(adminBots);
 
-  res.json(bot);
+    res.json(bot);
+  } catch (error) {
+    console.error('Failed to update admin bot:', error);
+    res.status(500).json({ message: error.message || 'Failed to update bot' });
+  }
 });
 
 // Delete bot
@@ -839,69 +844,79 @@ app.get('/api/admin/bot-requests/:id', (req, res) => {
 
 // Approve bot request
 app.put('/api/admin/bot-requests/:id/approve', async (req, res) => {
-  const id = Number(req.params.id);
-  const db = readDb();
-  ensureBotsArray(db);
-  ensurePaymentArrays(db);
-  ensureNotificationsArray(db);
+  try {
+    const id = Number(req.params.id);
+    const db = readDb();
+    ensureBotsArray(db);
+    ensurePaymentArrays(db);
+    ensureNotificationsArray(db);
 
-  const b = db.bots.find(x => x.id === id);
-  if (!b) return res.status(404).json({ message: 'Bot request not found' });
+    const b = db.bots.find(x => x.id === id);
+    if (!b) return res.status(404).json({ message: 'Bot request not found' });
 
-  b.status = 'approved';
-  const user = db.users.find(u => u.uid === b.uid);
+    b.status = 'approved';
+    const user = db.users.find(u => u.uid === b.uid);
 
-  db.paymentRecords.push({
-    id: Date.now(),
-    uid: b.uid,
-    userName: user ? user.name : 'Unknown',
-    botId: b.id,
-    botName: b.botName,
-    amount: Number(b.price) || 0,
-    category:
-      (b.requestType || 'direct_buy') === 'resell_request'
-        ? 'admin_resell_seed_purchase'
-        : 'admin_bot_purchase',
-    direction: 'to_admin',
-    broker: b.broker,
-    accountNumber: b.accountNumber,
-    paymentSlip: b.paymentSlip || null,
-    createdAt: new Date().toISOString(),
-  });
-
-  if (user) {
-    db.notifications.push({
-      id: Date.now() + 1,
-      uid: user.uid,
-      type:
+    db.paymentRecords.push({
+      id: Date.now(),
+      uid: b.uid,
+      userName: user ? user.name : 'Unknown',
+      botId: b.id,
+      botName: b.botName,
+      amount: Number(b.price) || 0,
+      category:
         (b.requestType || 'direct_buy') === 'resell_request'
-          ? 'admin_resell_request_approved'
-          : 'admin_bot_purchase_approved',
-      message:
-        (b.requestType || 'direct_buy') === 'resell_request'
-          ? `Your reseller request for "${b.botName}" was approved. This bot is now eligible for resale.`
-          : `Your bot purchase for "${b.botName}" was approved by admin.`,
-      read: false,
+          ? 'admin_resell_seed_purchase'
+          : 'admin_bot_purchase',
+      direction: 'to_admin',
+      broker: b.broker,
+      accountNumber: b.accountNumber,
+      paymentSlip: b.paymentSlip || null,
       createdAt: new Date().toISOString(),
     });
-  }
 
-  await saveAdminBotsStore(adminBots);
-  res.json({ message: 'Bot request approved', bot: b });
+    if (user) {
+      db.notifications.push({
+        id: Date.now() + 1,
+        uid: user.uid,
+        type:
+          (b.requestType || 'direct_buy') === 'resell_request'
+            ? 'admin_resell_request_approved'
+            : 'admin_bot_purchase_approved',
+        message:
+          (b.requestType || 'direct_buy') === 'resell_request'
+            ? `Your reseller request for "${b.botName}" was approved. This bot is now eligible for resale.`
+            : `Your bot purchase for "${b.botName}" was approved by admin.`,
+        read: false,
+        createdAt: new Date().toISOString(),
+      });
+    }
+
+    await writeDbAndWait(db);
+    res.json({ message: 'Bot request approved', bot: b });
+  } catch (error) {
+    console.error('Failed to approve bot request:', error);
+    res.status(500).json({ message: error.message || 'Failed to approve bot request' });
+  }
 });
 
 // Reject bot request
 app.put('/api/admin/bot-requests/:id/reject', async (req, res) => {
-  const id = Number(req.params.id);
-  const db = readDb();
-  ensureBotsArray(db);
+  try {
+    const id = Number(req.params.id);
+    const db = readDb();
+    ensureBotsArray(db);
 
-  const b = db.bots.find(x => x.id === id);
-  if (!b) return res.status(404).json({ message: 'Bot request not found' });
+    const b = db.bots.find(x => x.id === id);
+    if (!b) return res.status(404).json({ message: 'Bot request not found' });
 
-  b.status = 'rejected';
-  await writeDbAndWait(db);
-  res.json({ message: 'Bot request rejected', bot: b });
+    b.status = 'rejected';
+    await writeDbAndWait(db);
+    res.json({ message: 'Bot request rejected', bot: b });
+  } catch (error) {
+    console.error('Failed to reject bot request:', error);
+    res.status(500).json({ message: error.message || 'Failed to reject bot request' });
+  }
 });
 
 // ---------------- BOT RESALE MARKETPLACE ----------------
