@@ -552,7 +552,9 @@ app.get('/api/bots/catalog', (req, res) => {
 // Create a bot assignment for a user, using adminBots as source of truth
 app.post('/api/users/:uid/bots', (req, res) => {
   const { uid } = req.params;
-  const { brokerAccountId, botId, signedAgreementUrl, paymentSlip } = req.body;
+  const { brokerAccountId, botId, signedAgreementUrl, paymentSlip, requestType } = req.body;
+  const normalizedRequestType =
+    requestType === 'resell_request' ? 'resell_request' : 'direct_buy';
 
   if (!brokerAccountId || !botId || !signedAgreementUrl || !paymentSlip) {
     return res.status(400).json({
@@ -595,6 +597,8 @@ app.post('/api/users/:uid/bots', (req, res) => {
     broker: account.broker,
     accountNumber: account.accountNumber,
     accountType: account.accountType || 'N/A',
+    requestType: normalizedRequestType,
+    canResell: normalizedRequestType === 'resell_request',
     status: 'pending',
     createdAt: new Date().toISOString(),
   };
@@ -715,10 +719,17 @@ app.delete('/api/admin/bots/:id', (req, res) => {
 
 // List all bot requests
 app.get('/api/admin/bot-requests', (req, res) => {
+  const { type } = req.query;
   const db = readDb();
   ensureBotsArray(db);
 
   const requests = db.bots
+    .filter(b => {
+      const normalized = b.requestType || 'direct_buy';
+      if (type === 'buying') return normalized === 'direct_buy';
+      if (type === 'resell') return normalized === 'resell_request';
+      return true;
+    })
     .map(b => {
       const user = db.users.find(u => u.uid === b.uid);
       return {
@@ -732,6 +743,8 @@ app.get('/api/admin/bot-requests', (req, res) => {
         price: b.price,
         paymentSlip: b.paymentSlip || null,
         signedAgreementUrl: b.signedAgreementUrl,
+        requestType: b.requestType || 'direct_buy',
+        canResell: !!b.canResell,
         status: b.status || 'pending',
         createdAt: b.createdAt,
       };
@@ -762,6 +775,8 @@ app.get('/api/admin/bot-requests/:id', (req, res) => {
     price: b.price,
     paymentSlip: b.paymentSlip || null,
     signedAgreementUrl: b.signedAgreementUrl,
+    requestType: b.requestType || 'direct_buy',
+    canResell: !!b.canResell,
     status: b.status || 'pending',
     createdAt: b.createdAt,
   });
@@ -788,7 +803,10 @@ app.put('/api/admin/bot-requests/:id/approve', (req, res) => {
     botId: b.id,
     botName: b.botName,
     amount: Number(b.price) || 0,
-    category: 'admin_bot_purchase',
+    category:
+      (b.requestType || 'direct_buy') === 'resell_request'
+        ? 'admin_resell_seed_purchase'
+        : 'admin_bot_purchase',
     direction: 'to_admin',
     broker: b.broker,
     accountNumber: b.accountNumber,
@@ -800,8 +818,14 @@ app.put('/api/admin/bot-requests/:id/approve', (req, res) => {
     db.notifications.push({
       id: Date.now() + 1,
       uid: user.uid,
-      type: 'admin_bot_purchase_approved',
-      message: `Your bot purchase for "${b.botName}" was approved by admin.`,
+      type:
+        (b.requestType || 'direct_buy') === 'resell_request'
+          ? 'admin_resell_request_approved'
+          : 'admin_bot_purchase_approved',
+      message:
+        (b.requestType || 'direct_buy') === 'resell_request'
+          ? `Your reseller request for "${b.botName}" was approved. This bot is now eligible for resale.`
+          : `Your bot purchase for "${b.botName}" was approved by admin.`,
       read: false,
       createdAt: new Date().toISOString(),
     });
@@ -850,6 +874,10 @@ app.post('/api/users/:uid/bots/:botId/resell', (req, res) => {
 
   if (userBot.boughtFrom) {
     return res.status(400).json({ message: 'Bots purchased from other resellers cannot be resold again' });
+  }
+
+  if (!userBot.canResell) {
+    return res.status(400).json({ message: 'This bot is a direct purchase and is not eligible for resale' });
   }
 
   userBot.isForResale = true;
