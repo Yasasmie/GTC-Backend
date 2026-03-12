@@ -601,7 +601,8 @@ app.put('/api/admin/kyc-requests/:id/reject', async (req, res) => {
 // Create account for a user
 app.post('/api/users/:uid/accounts', async (req, res) => {
   const { uid } = req.params;
-  const { broker, accountType, accountNumber } = req.body;
+  const { broker, accountType, accountNumber, tradingPlatform } = req.body;
+  const normalizedPlatform = tradingPlatform === 'MT4' ? 'MT4' : 'MT5';
 
   if (!broker || !accountType || !accountNumber) {
     return res.status(400).json({
@@ -623,6 +624,7 @@ app.post('/api/users/:uid/accounts', async (req, res) => {
     broker,
     accountType,
     accountNumber,
+    tradingPlatform: normalizedPlatform,
   };
 
   db.accounts.push(newAccount);
@@ -682,9 +684,20 @@ app.get('/api/bots/catalog', (req, res) => {
 app.post('/api/users/:uid/bots', async (req, res) => {
   try {
     const { uid } = req.params;
-    const { brokerAccountId, botId, signedAgreementUrl, paymentSlip, requestType } = req.body;
+    const {
+      brokerAccountId,
+      botId,
+      signedAgreementUrl,
+      paymentSlip,
+      requestType,
+      broker,
+      accountNumber,
+      accountType,
+      tradingPlatform,
+    } = req.body;
     const normalizedRequestType =
       requestType === 'resell_request' ? 'resell_request' : 'direct_buy';
+    const normalizedPlatform = tradingPlatform === 'MT4' ? 'MT4' : 'MT5';
 
     if (!botId) {
       return res.status(400).json({
@@ -698,18 +711,41 @@ app.post('/api/users/:uid/bots', async (req, res) => {
     if (!user) return res.status(404).json({ message: 'User not found' });
 
     let account = null;
+    let resolvedBroker = 'N/A';
+    let resolvedAccountNumber = 'N/A';
+    let resolvedAccountType = 'N/A';
+    let resolvedTradingPlatform = 'N/A';
+
     if (normalizedRequestType === 'direct_buy') {
-      if (!brokerAccountId || !signedAgreementUrl || !paymentSlip) {
+      if (!signedAgreementUrl || !paymentSlip) {
         return res.status(400).json({
-          message: 'Direct buy requires brokerAccountId, signedAgreementUrl and paymentSlip',
+          message: 'Direct buy requires signedAgreementUrl and paymentSlip',
         });
       }
 
-      account = db.accounts.find(
-        a => a.id === brokerAccountId && a.uid === uid
-      );
-      if (!account) {
-        return res.status(404).json({ message: 'Broker account not found' });
+      if (brokerAccountId) {
+        account = db.accounts.find(
+          a => a.id === brokerAccountId && a.uid === uid
+        );
+        if (!account) {
+          return res.status(404).json({ message: 'Broker account not found' });
+        }
+
+        resolvedBroker = account.broker;
+        resolvedAccountNumber = account.accountNumber;
+        resolvedAccountType = account.accountType || 'N/A';
+        resolvedTradingPlatform = account.tradingPlatform || 'MT5';
+      } else {
+        if (!broker || !accountNumber) {
+          return res.status(400).json({
+            message: 'Direct buy without a saved account requires broker and accountNumber',
+          });
+        }
+
+        resolvedBroker = broker;
+        resolvedAccountNumber = accountNumber;
+        resolvedAccountType = accountType || 'Manual account';
+        resolvedTradingPlatform = normalizedPlatform;
       }
     }
 
@@ -733,9 +769,13 @@ app.post('/api/users/:uid/bots', async (req, res) => {
       botModel: adminBot.botModel || 'N/A',
       price: adminBot.price,
       adminBasePrice: adminBot.price,
-      broker: account ? account.broker : 'N/A',
-      accountNumber: account ? account.accountNumber : 'N/A',
-      accountType: account ? account.accountType || 'N/A' : 'N/A',
+      broker: normalizedRequestType === 'direct_buy' ? resolvedBroker : 'N/A',
+      accountNumber:
+        normalizedRequestType === 'direct_buy' ? resolvedAccountNumber : 'N/A',
+      accountType:
+        normalizedRequestType === 'direct_buy' ? resolvedAccountType : 'N/A',
+      tradingPlatform:
+        normalizedRequestType === 'direct_buy' ? resolvedTradingPlatform : 'N/A',
       requestType: normalizedRequestType,
       canResell: normalizedRequestType === 'resell_request',
       status: 'pending',
@@ -911,6 +951,7 @@ app.get('/api/admin/bot-requests', (req, res) => {
         userEmail: user ? user.email : '',
         broker: b.broker,
         accountNumber: b.accountNumber,
+        tradingPlatform: b.tradingPlatform || 'N/A',
         botName: b.botName,
         price: b.price,
         paymentSlip: b.paymentSlip || null,
@@ -943,6 +984,7 @@ app.get('/api/admin/bot-requests/:id', (req, res) => {
     userEmail: user ? user.email : '',
     broker: b.broker,
     accountNumber: b.accountNumber,
+    tradingPlatform: b.tradingPlatform || 'N/A',
     botName: b.botName,
     price: b.price,
     paymentSlip: b.paymentSlip || null,
@@ -983,6 +1025,7 @@ app.put('/api/admin/bot-requests/:id/approve', async (req, res) => {
       direction: 'to_admin',
       broker: b.broker,
       accountNumber: b.accountNumber,
+      tradingPlatform: b.tradingPlatform || 'N/A',
       paymentSlip: b.paymentSlip || null,
       createdAt: new Date().toISOString(),
     });
@@ -1152,6 +1195,7 @@ function createAdminCommissionSubmission(db, request, targetBot, buyer, seller) 
     botName: request.botName,
     broker: request.broker,
     accountNumber: request.accountNumber,
+    tradingPlatform: request.tradingPlatform || 'MT5',
     amountInAsset: request.amountInAsset,
     resalePrice,
     adminBasePrice,
@@ -1193,7 +1237,8 @@ function finalizeResaleApproval(db, request, submission) {
     a =>
       a.uid === request.buyerUid &&
       a.broker === request.broker &&
-      a.accountNumber === request.accountNumber
+      a.accountNumber === request.accountNumber &&
+      (a.tradingPlatform || 'MT5') === (request.tradingPlatform || 'MT5')
   );
 
   if (!buyerAccount) {
@@ -1203,6 +1248,7 @@ function finalizeResaleApproval(db, request, submission) {
       broker: request.broker,
       accountType: 'Marketplace Purchase',
       accountNumber: request.accountNumber,
+      tradingPlatform: request.tradingPlatform || 'MT5',
     };
     db.accounts.push(buyerAccount);
   }
@@ -1218,6 +1264,8 @@ function finalizeResaleApproval(db, request, submission) {
     broker: buyerAccount.broker,
     accountNumber: buyerAccount.accountNumber,
     accountType: buyerAccount.accountType || 'Marketplace Purchase',
+    tradingPlatform:
+      buyerAccount.tradingPlatform || request.tradingPlatform || 'MT5',
     isForResale: false,
     resalePrice: null,
     price: request.price,
@@ -1240,6 +1288,7 @@ function finalizeResaleApproval(db, request, submission) {
     direction: 'to_reseller',
     broker: request.broker,
     accountNumber: request.accountNumber,
+    tradingPlatform: request.tradingPlatform || 'MT5',
     paymentSlip: request.paymentSlip,
     createdAt: new Date().toISOString(),
   });
@@ -1255,6 +1304,7 @@ function finalizeResaleApproval(db, request, submission) {
     direction: 'to_reseller',
     broker: request.broker,
     accountNumber: request.accountNumber,
+    tradingPlatform: request.tradingPlatform || 'MT5',
     paymentSlip: request.paymentSlip,
     createdAt: new Date().toISOString(),
   });
@@ -1270,6 +1320,7 @@ function finalizeResaleApproval(db, request, submission) {
     direction: 'to_admin',
     broker: request.broker,
     accountNumber: request.accountNumber,
+    tradingPlatform: request.tradingPlatform || 'MT5',
     paymentSlip: submission.resellerAdminPaymentSlip,
     createdAt: new Date().toISOString(),
   });
@@ -1288,6 +1339,7 @@ function finalizeResaleApproval(db, request, submission) {
     profit: resellerEarning,
     broker: request.broker,
     accountNumber: request.accountNumber,
+    tradingPlatform: request.tradingPlatform || 'MT5',
     amountInAsset: request.amountInAsset,
     adminPaymentSlip: submission.resellerAdminPaymentSlip,
     date: new Date().toISOString()
@@ -1326,8 +1378,10 @@ app.post('/api/bots/resale/request', async (req, res) => {
     paymentSlip,
     broker,
     accountNumber,
+    tradingPlatform,
     amountInAsset,
   } = req.body;
+  const normalizedPlatform = tradingPlatform === 'MT4' ? 'MT4' : 'MT5';
 
   if (!uid || !botInstanceId || !paymentSlip || !broker || !accountNumber || amountInAsset == null) {
     return res.status(400).json({
@@ -1366,6 +1420,7 @@ app.post('/api/bots/resale/request', async (req, res) => {
     price: targetBot.resalePrice,
     broker,
     accountNumber,
+    tradingPlatform: normalizedPlatform,
     amountInAsset: Number(amountInAsset),
     paymentSlip,
     status: 'pending',
