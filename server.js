@@ -535,7 +535,7 @@ app.delete('/api/users/:uid/accounts/:id', async (req, res) => {
 // ---------------- BOTS ----------------
 
 function ensureBotsArray(db) {
-  if (!db.bots) db.bots = [];
+  if (!Array.isArray(db.bots)) db.bots = [];
 }
 
 // OLD static catalog
@@ -637,7 +637,7 @@ app.get('/api/admin/users/:uid/bots', (req, res) => {
 // ---------------- ADMIN MANAGE BOTS ----------------
 
 function ensureAdminBotsArray(db) {
-  if (!db.adminBots) db.adminBots = [];
+  if (!Array.isArray(db.adminBots)) db.adminBots = [];
 }
 
 // List all bots, newest first
@@ -942,8 +942,8 @@ app.get('/api/bots/resale', (req, res) => {
 
 // Helper for resale arrays
 function ensureResaleArrays(db) {
-  if (!db.resaleRequests) db.resaleRequests = [];
-  if (!db.resaleHistory) db.resaleHistory = [];
+  if (!Array.isArray(db.resaleRequests)) db.resaleRequests = [];
+  if (!Array.isArray(db.resaleHistory)) db.resaleHistory = [];
 }
 
 function createAdminCommissionSubmission(db, request, targetBot, buyer, seller) {
