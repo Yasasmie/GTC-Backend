@@ -583,9 +583,9 @@ app.post('/api/users/:uid/bots', async (req, res) => {
   const normalizedRequestType =
     requestType === 'resell_request' ? 'resell_request' : 'direct_buy';
 
-  if (!brokerAccountId || !botId || !signedAgreementUrl || !paymentSlip) {
+  if (!botId) {
     return res.status(400).json({
-      message: 'brokerAccountId, botId, signedAgreementUrl and paymentSlip are required',
+      message: 'botId is required',
     });
   }
 
@@ -594,11 +594,20 @@ app.post('/api/users/:uid/bots', async (req, res) => {
   const user = db.users.find(u => u.uid === uid);
   if (!user) return res.status(404).json({ message: 'User not found' });
 
-  const account = db.accounts.find(
-    a => a.id === brokerAccountId && a.uid === uid
-  );
-  if (!account) {
-    return res.status(404).json({ message: 'Broker account not found' });
+  let account = null;
+  if (normalizedRequestType === 'direct_buy') {
+    if (!brokerAccountId || !signedAgreementUrl || !paymentSlip) {
+      return res.status(400).json({
+        message: 'Direct buy requires brokerAccountId, signedAgreementUrl and paymentSlip',
+      });
+    }
+
+    account = db.accounts.find(
+      a => a.id === brokerAccountId && a.uid === uid
+    );
+    if (!account) {
+      return res.status(404).json({ message: 'Broker account not found' });
+    }
   }
 
   const adminBots = await getAdminBotsStore();
@@ -612,18 +621,18 @@ app.post('/api/users/:uid/bots', async (req, res) => {
   const newUserBot = {
     id: Date.now(),
     uid,
-    brokerAccountId,
+    brokerAccountId: account ? brokerAccountId : null,
     botId,
-    signedAgreementUrl,
-    paymentSlip,
+    signedAgreementUrl: normalizedRequestType === 'direct_buy' ? signedAgreementUrl : null,
+    paymentSlip: normalizedRequestType === 'direct_buy' ? paymentSlip : null,
     botName: adminBot.name,
     botType: adminBot.botType || 'Trading Bot',
     botModel: adminBot.botModel || 'N/A',
     price: adminBot.price,
     adminBasePrice: adminBot.price,
-    broker: account.broker,
-    accountNumber: account.accountNumber,
-    accountType: account.accountType || 'N/A',
+    broker: account ? account.broker : 'N/A',
+    accountNumber: account ? account.accountNumber : 'N/A',
+    accountType: account ? account.accountType || 'N/A' : 'N/A',
     requestType: normalizedRequestType,
     canResell: normalizedRequestType === 'resell_request',
     status: 'pending',
