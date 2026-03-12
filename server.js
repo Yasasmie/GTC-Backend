@@ -642,39 +642,65 @@ function ensureAdminBotsArray(db) {
 
 // List all bots, newest first
 app.get('/api/admin/bots', (req, res) => {
-  const db = readDb();
-  ensureAdminBotsArray(db);
-  const sorted = [...db.adminBots].sort((a, b) => b.id - a.id);
-  res.json(sorted);
+  try {
+    const db = readDb();
+    ensureAdminBotsArray(db);
+    const safeBots = db.adminBots.filter(
+      bot => bot && typeof bot === 'object'
+    );
+    const sorted = [...safeBots].sort(
+      (a, b) => Number(b.id || 0) - Number(a.id || 0)
+    );
+    res.json(sorted);
+  } catch (error) {
+    console.error('Failed to list admin bots:', error);
+    res.status(500).json({ message: error.message || 'Failed to load bots' });
+  }
 });
 
 // Create new bot
 app.post('/api/admin/bots', async (req, res) => {
-  const { name, price, cost, subscriptionFee, botType, botModel } = req.body;
-  if (!name || price == null || cost == null || subscriptionFee == null) {
-    return res
-      .status(400)
-      .json({ message: 'name, price, cost, subscriptionFee, botType, botModel are required' });
+  try {
+    const { name, price, cost, subscriptionFee, botType, botModel } = req.body || {};
+    if (!name || price == null || cost == null || subscriptionFee == null) {
+      return res
+        .status(400)
+        .json({ message: 'name, price, cost, subscriptionFee, botType, botModel are required' });
+    }
+
+    const numericPrice = Number(price);
+    const numericCost = Number(cost);
+    const numericSubscriptionFee = Number(subscriptionFee);
+    if (
+      !Number.isFinite(numericPrice) ||
+      !Number.isFinite(numericCost) ||
+      !Number.isFinite(numericSubscriptionFee)
+    ) {
+      return res.status(400).json({ message: 'price, cost and subscriptionFee must be valid numbers' });
+    }
+
+    const db = readDb();
+    ensureAdminBotsArray(db);
+
+    const newBot = {
+      id: Date.now(),
+      name: String(name).trim(),
+      price: numericPrice,
+      cost: numericCost,
+      subscriptionFee: numericSubscriptionFee,
+      botType: botType || 'Trading Bot',
+      botModel: botModel || 'N/A',
+      createdAt: new Date().toISOString(),
+    };
+
+    db.adminBots.push(newBot);
+    await writeDbAndWait(db);
+
+    res.status(201).json(newBot);
+  } catch (error) {
+    console.error('Failed to create admin bot:', error);
+    res.status(500).json({ message: error.message || 'Failed to create bot' });
   }
-
-  const db = readDb();
-  ensureAdminBotsArray(db);
-
-  const newBot = {
-    id: Date.now(),
-    name,
-    price,
-    cost,
-    subscriptionFee,
-    botType: botType || 'Trading Bot',
-    botModel: botModel || 'N/A',
-    createdAt: new Date().toISOString(),
-  };
-
-  db.adminBots.push(newBot);
-  await writeDbAndWait(db);
-
-  res.status(201).json(newBot);
 });
 
 // Update bot
