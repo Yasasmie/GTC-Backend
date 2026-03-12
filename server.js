@@ -169,7 +169,7 @@ function writeDb(db) {
 }
 
 async function writeDbAndWait(db) {
-  writeDb(db);
+  await writeDbAndWait(db);
   await persistQueue;
 }
 
@@ -250,7 +250,7 @@ function serializeUserSummary(user) {
 
 // ---------------- USERS + KYC ----------------
 
-app.post('/api/users', (req, res) => {
+app.post('/api/users', async (req, res) => {
   const { uid, email, name, referredBy } = req.body;
 
   if (!uid || !email) {
@@ -293,7 +293,7 @@ app.post('/api/users', (req, res) => {
   };
 
   db.users.push(newUser);
-  writeDb(db);
+  await writeDbAndWait(db);
 
   res.status(201).json(newUser);
 });
@@ -325,7 +325,7 @@ app.get('/api/users/:uid/profile', (req, res) => {
 });
 
 // User: submit KYC (with NIC front/back base64)
-app.post('/api/users/:uid/kyc', (req, res) => {
+app.post('/api/users/:uid/kyc', async (req, res) => {
   const db = readDb();
   const user = db.users.find(u => u.uid === req.params.uid);
   if (!user) return res.status(404).json({ message: 'User not found' });
@@ -352,7 +352,7 @@ app.post('/api/users/:uid/kyc', (req, res) => {
     nicBack: nicBack || null,
   };
 
-  writeDb(db);
+  await writeDbAndWait(db);
 
   res.json({ message: 'KYC submitted', user });
 });
@@ -384,19 +384,19 @@ app.get('/api/admin/users/:uid/network', (req, res) => {
   });
 });
 
-app.put('/api/admin/users/:id/approve', (req, res) => {
+app.put('/api/admin/users/:id/approve', async (req, res) => {
   const id = Number(req.params.id);
   const db = readDb();
   const user = db.users.find(u => u.id === id);
   if (!user) return res.status(404).json({ message: 'User not found' });
 
   user.status = 'approved';
-  writeDb(db);
+  await writeDbAndWait(db);
 
   res.json(user);
 });
 
-app.delete('/api/admin/users/:id', (req, res) => {
+app.delete('/api/admin/users/:id', async (req, res) => {
   const id = Number(req.params.id);
   const db = readDb();
   const index = db.users.findIndex(u => u.id === id);
@@ -404,7 +404,7 @@ app.delete('/api/admin/users/:id', (req, res) => {
     return res.status(404).json({ message: 'User not found' });
 
   db.users.splice(index, 1);
-  writeDb(db);
+  await writeDbAndWait(db);
 
   res.json({ message: 'User deleted' });
 });
@@ -445,7 +445,7 @@ app.get('/api/admin/kyc-requests/:id', (req, res) => {
 });
 
 // approve KYC
-app.put('/api/admin/kyc-requests/:id/approve', (req, res) => {
+app.put('/api/admin/kyc-requests/:id/approve', async (req, res) => {
   const id = Number(req.params.id);
   const db = readDb();
   const user = db.users.find(u => u.id === id);
@@ -453,12 +453,12 @@ app.put('/api/admin/kyc-requests/:id/approve', (req, res) => {
     return res.status(404).json({ message: 'KYC not found' });
   }
   user.kycStatus = 'approved';
-  writeDb(db);
+  await writeDbAndWait(db);
   res.json({ message: 'KYC approved', user });
 });
 
 // reject KYC
-app.put('/api/admin/kyc-requests/:id/reject', (req, res) => {
+app.put('/api/admin/kyc-requests/:id/reject', async (req, res) => {
   const id = Number(req.params.id);
   const db = readDb();
   const user = db.users.find(u => u.id === id);
@@ -466,14 +466,14 @@ app.put('/api/admin/kyc-requests/:id/reject', (req, res) => {
     return res.status(404).json({ message: 'KYC not found' });
   }
   user.kycStatus = 'rejected';
-  writeDb(db);
+  await writeDbAndWait(db);
   res.json({ message: 'KYC rejected', user });
 });
 
 // ---------------- ACCOUNTS ----------------
 
 // Create account for a user
-app.post('/api/users/:uid/accounts', (req, res) => {
+app.post('/api/users/:uid/accounts', async (req, res) => {
   const { uid } = req.params;
   const { broker, accountType, accountNumber } = req.body;
 
@@ -500,7 +500,7 @@ app.post('/api/users/:uid/accounts', (req, res) => {
   };
 
   db.accounts.push(newAccount);
-  writeDb(db);
+  await writeDbAndWait(db);
 
   res.status(201).json(newAccount);
 });
@@ -514,7 +514,7 @@ app.get('/api/users/:uid/accounts', (req, res) => {
 });
 
 // Delete one account
-app.delete('/api/users/:uid/accounts/:id', (req, res) => {
+app.delete('/api/users/:uid/accounts/:id', async (req, res) => {
   const { uid, id } = req.params;
   const numericId = Number(id);
 
@@ -527,7 +527,7 @@ app.delete('/api/users/:uid/accounts/:id', (req, res) => {
   }
 
   db.accounts.splice(index, 1);
-  writeDb(db);
+  await writeDbAndWait(db);
 
   res.json({ message: 'Account deleted' });
 });
@@ -550,7 +550,7 @@ app.get('/api/bots/catalog', (req, res) => {
 });
 
 // Create a bot assignment for a user, using adminBots as source of truth
-app.post('/api/users/:uid/bots', (req, res) => {
+app.post('/api/users/:uid/bots', async (req, res) => {
   const { uid } = req.params;
   const { brokerAccountId, botId, signedAgreementUrl, paymentSlip, requestType } = req.body;
   const normalizedRequestType =
@@ -604,7 +604,7 @@ app.post('/api/users/:uid/bots', (req, res) => {
   };
 
   db.bots.push(newUserBot);
-  writeDb(db);
+  await writeDbAndWait(db);
 
   res.status(201).json(newUserBot);
 });
@@ -649,7 +649,7 @@ app.get('/api/admin/bots', (req, res) => {
 });
 
 // Create new bot
-app.post('/api/admin/bots', (req, res) => {
+app.post('/api/admin/bots', async (req, res) => {
   const { name, price, cost, subscriptionFee, botType, botModel } = req.body;
   if (!name || price == null || cost == null || subscriptionFee == null) {
     return res
@@ -672,13 +672,13 @@ app.post('/api/admin/bots', (req, res) => {
   };
 
   db.adminBots.push(newBot);
-  writeDb(db);
+  await writeDbAndWait(db);
 
   res.status(201).json(newBot);
 });
 
 // Update bot
-app.put('/api/admin/bots/:id', (req, res) => {
+app.put('/api/admin/bots/:id', async (req, res) => {
   const id = Number(req.params.id);
   const { name, price, cost, subscriptionFee } = req.body;
 
@@ -693,13 +693,13 @@ app.put('/api/admin/bots/:id', (req, res) => {
   bot.cost = cost ?? bot.cost;
   bot.subscriptionFee = subscriptionFee ?? bot.subscriptionFee;
 
-  writeDb(db);
+  await writeDbAndWait(db);
 
   res.json(bot);
 });
 
 // Delete bot
-app.delete('/api/admin/bots/:id', (req, res) => {
+app.delete('/api/admin/bots/:id', async (req, res) => {
   const id = Number(req.params.id);
   const db = readDb();
   ensureAdminBotsArray(db);
@@ -710,7 +710,7 @@ app.delete('/api/admin/bots/:id', (req, res) => {
   }
 
   db.adminBots.splice(index, 1);
-  writeDb(db);
+  await writeDbAndWait(db);
 
   res.json({ message: 'Bot deleted' });
 });
@@ -783,7 +783,7 @@ app.get('/api/admin/bot-requests/:id', (req, res) => {
 });
 
 // Approve bot request
-app.put('/api/admin/bot-requests/:id/approve', (req, res) => {
+app.put('/api/admin/bot-requests/:id/approve', async (req, res) => {
   const id = Number(req.params.id);
   const db = readDb();
   ensureBotsArray(db);
@@ -831,12 +831,12 @@ app.put('/api/admin/bot-requests/:id/approve', (req, res) => {
     });
   }
 
-  writeDb(db);
+  await writeDbAndWait(db);
   res.json({ message: 'Bot request approved', bot: b });
 });
 
 // Reject bot request
-app.put('/api/admin/bot-requests/:id/reject', (req, res) => {
+app.put('/api/admin/bot-requests/:id/reject', async (req, res) => {
   const id = Number(req.params.id);
   const db = readDb();
   ensureBotsArray(db);
@@ -845,14 +845,14 @@ app.put('/api/admin/bot-requests/:id/reject', (req, res) => {
   if (!b) return res.status(404).json({ message: 'Bot request not found' });
 
   b.status = 'rejected';
-  writeDb(db);
+  await writeDbAndWait(db);
   res.json({ message: 'Bot request rejected', bot: b });
 });
 
 // ---------------- BOT RESALE MARKETPLACE ----------------
 
 // User: List a bot for resale
-app.post('/api/users/:uid/bots/:botId/resell', (req, res) => {
+app.post('/api/users/:uid/bots/:botId/resell', async (req, res) => {
   const { uid, botId } = req.params;
   const { resalePrice } = req.body;
 
@@ -883,12 +883,12 @@ app.post('/api/users/:uid/bots/:botId/resell', (req, res) => {
   userBot.isForResale = true;
   userBot.resalePrice = resalePrice;
 
-  writeDb(db);
+  await writeDbAndWait(db);
   res.json({ message: 'Bot added to the shop', bot: userBot });
 });
 
 // User: Cancel resale listing
-app.post('/api/users/:uid/bots/:botId/cancel-resale', (req, res) => {
+app.post('/api/users/:uid/bots/:botId/cancel-resale', async (req, res) => {
   const { uid, botId } = req.params;
   const db = readDb();
   ensureBotsArray(db);
@@ -901,7 +901,7 @@ app.post('/api/users/:uid/bots/:botId/cancel-resale', (req, res) => {
   userBot.isForResale = false;
   userBot.resalePrice = null;
 
-  writeDb(db);
+  await writeDbAndWait(db);
   res.json({ message: 'Bot removed from the shop', bot: userBot });
 });
 // GET: All bots available for resale (Marketplace)
@@ -1137,7 +1137,7 @@ function finalizeResaleApproval(db, request, submission) {
 }
 
 // User: Request to purchase a bot from resale marketplace
-app.post('/api/bots/resale/request', (req, res) => {
+app.post('/api/bots/resale/request', async (req, res) => {
   const {
     uid,
     botInstanceId,
@@ -1193,7 +1193,7 @@ app.post('/api/bots/resale/request', (req, res) => {
   };
 
   db.resaleRequests.push(newRequest);
-  writeDb(db);
+  await writeDbAndWait(db);
 
   res.status(201).json({ message: 'Purchase request submitted', request: newRequest });
 });
@@ -1219,7 +1219,7 @@ app.get('/api/users/:uid/seller-requests', (req, res) => {
   res.json(myRequests);
 });
 
-app.post('/api/bots/resale/requests/:requestId/send-to-admin', (req, res) => {
+app.post('/api/bots/resale/requests/:requestId/send-to-admin', async (req, res) => {
   const { requestId } = req.params;
   const { adminPaymentSlip } = req.body;
   const db = readDb();
@@ -1252,12 +1252,12 @@ app.post('/api/bots/resale/requests/:requestId/send-to-admin', (req, res) => {
   submission.resellerAdminPaymentSlip = adminPaymentSlip;
   submission.status = 'pending';
   request.status = 'pending_admin';
-  writeDb(db);
+  await writeDbAndWait(db);
   res.json({ message: 'Sent to admin for approval', submission, request });
 });
 
 // User: Approve or Decline resale request
-app.post('/api/bots/resale/requests/:requestId/status', (req, res) => {
+app.post('/api/bots/resale/requests/:requestId/status', async (req, res) => {
   const { requestId } = req.params;
   const { status, adminPaymentSlip } = req.body; // 'approved' | 'rejected'
 
@@ -1327,7 +1327,7 @@ app.post('/api/bots/resale/requests/:requestId/status', (req, res) => {
     });
   }
 
-  writeDb(db);
+  await writeDbAndWait(db);
   res.json({
     message:
       status === 'approved'
@@ -1373,7 +1373,7 @@ app.get('/api/admin/resale-approvals/:id', (req, res) => {
   res.json(submission);
 });
 
-app.put('/api/admin/resale-approvals/:id/approve', (req, res) => {
+app.put('/api/admin/resale-approvals/:id/approve', async (req, res) => {
   const id = Number(req.params.id);
   const db = readDb();
   ensurePaymentArrays(db);
@@ -1397,11 +1397,11 @@ app.put('/api/admin/resale-approvals/:id/approve', (req, res) => {
     return res.status(400).json({ message: result.error });
   }
 
-  writeDb(db);
+  await writeDbAndWait(db);
   res.json({ message: 'Resale approved', submission, request });
 });
 
-app.put('/api/admin/resale-approvals/:id/reject', (req, res) => {
+app.put('/api/admin/resale-approvals/:id/reject', async (req, res) => {
   const id = Number(req.params.id);
   const db = readDb();
   ensurePaymentArrays(db);
@@ -1441,7 +1441,7 @@ app.put('/api/admin/resale-approvals/:id/reject', (req, res) => {
     createdAt: new Date().toISOString()
   });
 
-  writeDb(db);
+  await writeDbAndWait(db);
   res.json({ message: 'Resale rejected', submission, request });
 });
 
@@ -1584,7 +1584,7 @@ app.get('/api/admin/dashboard-payments', (req, res) => {
 // ---------------- CAREERS ----------------
 
 // User: submit career application
-app.post('/api/careers', (req, res) => {
+app.post('/api/careers', async (req, res) => {
   const {
     name,
     address,
@@ -1625,7 +1625,7 @@ app.post('/api/careers', (req, res) => {
   };
 
   db.careers.push(newApplication);
-  writeDb(db);
+  await writeDbAndWait(db);
 
   res.status(201).json(newApplication);
 });
@@ -1667,7 +1667,7 @@ app.get('/api/courses', (req, res) => {
 });
 
 // Admin: Create course
-app.post('/api/admin/courses', (req, res) => {
+app.post('/api/admin/courses', async (req, res) => {
   try {
     const db = readDb();
     ensureCoursesArray(db);
@@ -1700,7 +1700,7 @@ app.post('/api/admin/courses', (req, res) => {
     };
 
     db.courses.push(newCourse);
-    writeDb(db);
+    await writeDbAndWait(db);
     res.status(201).json(newCourse);
   } catch (err) {
     res.status(400).json({ error: 'Failed to create course' });
@@ -1708,7 +1708,7 @@ app.post('/api/admin/courses', (req, res) => {
 });
 
 // Admin: Update course
-app.put('/api/admin/courses/:id', (req, res) => {
+app.put('/api/admin/courses/:id', async (req, res) => {
   try {
     const db = readDb();
     ensureCoursesArray(db);
@@ -1740,7 +1740,7 @@ app.put('/api/admin/courses/:id', (req, res) => {
       }
     }
 
-    writeDb(db);
+    await writeDbAndWait(db);
     res.json(course);
   } catch (err) {
     res.status(500).json({ error: 'Failed to update course' });
@@ -1748,7 +1748,7 @@ app.put('/api/admin/courses/:id', (req, res) => {
 });
 
 // Admin: Delete course
-app.delete('/api/admin/courses/:id', (req, res) => {
+app.delete('/api/admin/courses/:id', async (req, res) => {
   try {
     const db = readDb();
     ensureCoursesArray(db);
@@ -1757,7 +1757,7 @@ app.delete('/api/admin/courses/:id', (req, res) => {
     if (index === -1) return res.status(404).json({ error: 'Course not found' });
 
     db.courses.splice(index, 1);
-    writeDb(db);
+    await writeDbAndWait(db);
     res.json({ message: 'Course deleted' });
   } catch (err) {
     res.status(500).json({ error: 'Delete failed' });
@@ -1767,7 +1767,7 @@ app.delete('/api/admin/courses/:id', (req, res) => {
 // ---------------- COURSE APPLICATIONS ----------------
 
 // User: submit course application with payment slip (base64 or URL)
-app.post('/api/courses/apply', (req, res) => {
+app.post('/api/courses/apply', async (req, res) => {
   try {
     const {
       courseId,
@@ -1810,7 +1810,7 @@ app.post('/api/courses/apply', (req, res) => {
     };
 
     db.courseApplications.push(appRecord);
-    writeDb(db);
+    await writeDbAndWait(db);
 
     res.status(201).json(appRecord);
   } catch (err) {
@@ -1831,7 +1831,7 @@ app.get('/api/admin/course-applications', (req, res) => {
 });
 
 // Admin: update application status
-app.put('/api/admin/course-applications/:id/status', (req, res) => {
+app.put('/api/admin/course-applications/:id/status', async (req, res) => {
   try {
     const id = Number(req.params.id);
     const { status } = req.body; // 'pending' | 'approved' | 'rejected'
@@ -1862,7 +1862,7 @@ app.put('/api/admin/course-applications/:id/status', (req, res) => {
       }
     }
 
-    writeDb(db);
+    await writeDbAndWait(db);
     res.json(appRecord);
   } catch (err) {
     res.status(500).json({ error: 'Failed to update application status' });
@@ -1884,7 +1884,7 @@ app.get('/api/users/:uid/notifications', (req, res) => {
   }
 });
 
-app.put('/api/users/:uid/notifications/:notifId/read', (req, res) => {
+app.put('/api/users/:uid/notifications/:notifId/read', async (req, res) => {
   try {
     const db = readDb();
     ensureNotificationsArray(db);
@@ -1893,7 +1893,7 @@ app.put('/api/users/:uid/notifications/:notifId/read', (req, res) => {
     );
     if (notif) {
       notif.read = true;
-      writeDb(db);
+      await writeDbAndWait(db);
     }
     res.json({ success: true });
   } catch (err) {
@@ -1901,12 +1901,12 @@ app.put('/api/users/:uid/notifications/:notifId/read', (req, res) => {
   }
 });
 
-app.delete('/api/users/:uid/notifications', (req, res) => {
+app.delete('/api/users/:uid/notifications', async (req, res) => {
   try {
     const db = readDb();
     ensureNotificationsArray(db);
     db.notifications = db.notifications.filter(n => n.uid !== req.params.uid);
-    writeDb(db);
+    await writeDbAndWait(db);
     res.json({ success: true, deleted: true });
   } catch (err) {
     res.status(500).json({ error: 'Failed to delete notifications' });
@@ -1985,3 +1985,4 @@ async function startServer() {
 }
 
 startServer();
+
