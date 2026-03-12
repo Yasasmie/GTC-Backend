@@ -162,9 +162,82 @@ function readDb() {
   return JSON.parse(JSON.stringify(dbCache));
 }
 
+function clearInlineBlob(value) {
+  if (typeof value !== 'string') return value;
+  return value.startsWith('data:') ? null : value;
+}
+
+function compactDbForPersistence(db) {
+  const normalized = applyDbDefaults(db);
+
+  normalized.users = normalized.users.map(user => {
+    if (!user || typeof user !== 'object' || !user.kyc) return user;
+    const status = String(user.kycStatus || '').toLowerCase();
+    if (!['approved', 'rejected'].includes(status)) return user;
+
+    return {
+      ...user,
+      kyc: {
+        ...user.kyc,
+        nicFront: clearInlineBlob(user.kyc.nicFront),
+        nicBack: clearInlineBlob(user.kyc.nicBack),
+      },
+    };
+  });
+
+  normalized.bots = normalized.bots.map(bot => {
+    if (!bot || typeof bot !== 'object') return bot;
+    const status = String(bot.status || '').toLowerCase();
+    if (!['approved', 'rejected'].includes(status)) return bot;
+
+    return {
+      ...bot,
+      paymentSlip: clearInlineBlob(bot.paymentSlip),
+      signedAgreementUrl: clearInlineBlob(bot.signedAgreementUrl),
+    };
+  });
+
+  normalized.resaleRequests = normalized.resaleRequests.map(request => {
+    if (!request || typeof request !== 'object') return request;
+    const status = String(request.status || '').toLowerCase();
+    if (!['approved', 'rejected'].includes(status)) return request;
+
+    return {
+      ...request,
+      paymentSlip: clearInlineBlob(request.paymentSlip),
+      adminPaymentSlip: clearInlineBlob(request.adminPaymentSlip),
+    };
+  });
+
+  normalized.adminCommissionSubmissions = normalized.adminCommissionSubmissions.map(submission => {
+    if (!submission || typeof submission !== 'object') return submission;
+    const status = String(submission.status || '').toLowerCase();
+    if (status === 'pending') return submission;
+
+    return {
+      ...submission,
+      adminPaymentSlip: clearInlineBlob(submission.adminPaymentSlip),
+      paymentSlip: clearInlineBlob(submission.paymentSlip),
+    };
+  });
+
+  return normalized;
+}
+
 function writeDb(db) {
-  dbCache = applyDbDefaults(db);
-  persistQueue = persistQueue.then(() => dbRef.set(dbCache));
+  const normalized = applyDbDefaults(db);
+  dbCache = normalized;
+
+  // Recover queue after transient Firestore failures instead of leaving it permanently rejected.
+  persistQueue = persistQueue
+    .catch(error => {
+      console.error('Recovering from previous persistence error:', error);
+    })
+    .then(async () => {
+      const payload = compactDbForPersistence(normalized);
+      await dbRef.set(payload);
+      dbCache = payload;
+    });
 }
 
 async function writeDbAndWait(db) {
@@ -1469,75 +1542,85 @@ app.get('/api/admin/resale-approvals/:id', (req, res) => {
 });
 
 app.put('/api/admin/resale-approvals/:id/approve', async (req, res) => {
-  const id = Number(req.params.id);
-  const db = readDb();
-  ensurePaymentArrays(db);
-  ensureResaleArrays(db);
+  try {
+    const id = Number(req.params.id);
+    const db = readDb();
+    ensurePaymentArrays(db);
+    ensureResaleArrays(db);
 
-  const submission = db.adminCommissionSubmissions.find(item => item.id === id);
-  if (!submission) {
-    return res.status(404).json({ message: 'Resale approval not found' });
-  }
-  if (submission.status !== 'pending') {
-    return res.status(400).json({ message: 'Submission already processed' });
-  }
+    const submission = db.adminCommissionSubmissions.find(item => item.id === id);
+    if (!submission) {
+      return res.status(404).json({ message: 'Resale approval not found' });
+    }
+    if (submission.status !== 'pending') {
+      return res.status(400).json({ message: 'Submission already processed' });
+    }
 
-  const request = db.resaleRequests.find(item => item.id === submission.requestId);
-  if (!request) {
-    return res.status(404).json({ message: 'Linked resale request not found' });
-  }
+    const request = db.resaleRequests.find(item => item.id === submission.requestId);
+    if (!request) {
+      return res.status(404).json({ message: 'Linked resale request not found' });
+    }
 
-  const result = finalizeResaleApproval(db, request, submission);
-  if (result.error) {
-    return res.status(400).json({ message: result.error });
-  }
+    const result = finalizeResaleApproval(db, request, submission);
+    if (result.error) {
+      return res.status(400).json({ message: result.error });
+    }
 
-  await writeDbAndWait(db);
-  res.json({ message: 'Resale approved', submission, request });
+    await writeDbAndWait(db);
+    res.json({ message: 'Resale approved', submission, request });
+  } catch (error) {
+    console.error('Failed to approve resale submission:', error);
+    res.status(500).json({ message: error.message || 'Failed to approve resale submission' });
+  }
 });
 
 app.put('/api/admin/resale-approvals/:id/reject', async (req, res) => {
-  const id = Number(req.params.id);
-  const db = readDb();
-  ensurePaymentArrays(db);
-  ensureResaleArrays(db);
-  ensureNotificationsArray(db);
+  try {
+    const id = Number(req.params.id);
+    const db = readDb();
+    ensurePaymentArrays(db);
+    ensureResaleArrays(db);
+    ensureNotificationsArray(db);
 
-  const submission = db.adminCommissionSubmissions.find(item => item.id === id);
-  if (!submission) {
-    return res.status(404).json({ message: 'Resale approval not found' });
+    const submission = db.adminCommissionSubmissions.find(item => item.id === id);
+    if (!submission) {
+      return res.status(404).json({ message: 'Resale approval not found' });
+    }
+    if (submission.status !== 'pending') {
+      return res.status(400).json({ message: 'Submission already processed' });
+    }
+
+    const request = db.resaleRequests.find(item => item.id === submission.requestId);
+    if (request) {
+      request.status = 'rejected';
+    }
+    submission.status = 'rejected';
+    submission.rejectedAt = new Date().toISOString();
+
+    db.notifications.push({
+      id: Date.now() + 1,
+      uid: submission.resellerUid,
+      type: 'resale_admin_rejected',
+      message: `Admin rejected the resale submission for "${submission.botName}".`,
+      read: false,
+      createdAt: new Date().toISOString()
+    });
+
+    db.notifications.push({
+      id: Date.now() + 2,
+      uid: submission.buyerUid,
+      type: 'resale_admin_rejected',
+      message: `Admin rejected your request for "${submission.botName}".`,
+      read: false,
+      createdAt: new Date().toISOString()
+    });
+
+    await writeDbAndWait(db);
+    res.json({ message: 'Resale rejected', submission, request });
+  } catch (error) {
+    console.error('Failed to reject resale submission:', error);
+    res.status(500).json({ message: error.message || 'Failed to reject resale submission' });
   }
-  if (submission.status !== 'pending') {
-    return res.status(400).json({ message: 'Submission already processed' });
-  }
-
-  const request = db.resaleRequests.find(item => item.id === submission.requestId);
-  if (request) {
-    request.status = 'rejected';
-  }
-  submission.status = 'rejected';
-  submission.rejectedAt = new Date().toISOString();
-
-  db.notifications.push({
-    id: Date.now() + 1,
-    uid: submission.resellerUid,
-    type: 'resale_admin_rejected',
-    message: `Admin rejected the resale submission for "${submission.botName}".`,
-    read: false,
-    createdAt: new Date().toISOString()
-  });
-
-  db.notifications.push({
-    id: Date.now() + 2,
-    uid: submission.buyerUid,
-    type: 'resale_admin_rejected',
-    message: `Admin rejected your request for "${submission.botName}".`,
-    read: false,
-    createdAt: new Date().toISOString()
-  });
-
-  await writeDbAndWait(db);
-  res.json({ message: 'Resale rejected', submission, request });
 });
 
 app.get('/api/users/:uid/dashboard-payments', (req, res) => {
@@ -2066,6 +2149,12 @@ app.get('/api/users/:uid/course-applications', (req, res) => {
   } catch (err) {
     res.status(500).json({ error: 'Failed to fetch user course applications' });
   }
+});
+
+app.use((err, req, res, next) => {
+  console.error('Unhandled API error:', err);
+  if (res.headersSent) return next(err);
+  res.status(500).json({ message: err?.message || 'Internal server error' });
 });
 
 const PORT = Number(process.env.PORT || 5000);
