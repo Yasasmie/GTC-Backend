@@ -264,6 +264,20 @@ app.post('/api/users', (req, res) => {
     return res.json(existing);
   }
 
+  let normalizedReferredBy = null;
+  if (typeof referredBy === 'string' && referredBy.trim()) {
+    const referralCode = referredBy.trim().replace(/\/+$/, '');
+    const referralOwner = db.users.find(
+      u => u.uid === referralCode || String(u.id) === referralCode
+    );
+
+    if (!referralOwner) {
+      return res.status(400).json({ message: 'Invalid referral code' });
+    }
+
+    normalizedReferredBy = referralOwner.uid;
+  }
+
   const newUser = {
     id: db.nextUserId++,
     uid,
@@ -275,7 +289,7 @@ app.post('/api/users', (req, res) => {
     kyc: null,
     totalSells: 0,
     totalRevenue: 0,
-    referredBy: referredBy || null,
+    referredBy: normalizedReferredBy,
   };
 
   db.users.push(newUser);
