@@ -244,6 +244,19 @@ function monthLabel(monthKey) {
   });
 }
 
+function sortNewest(items = [], dateKey = 'createdAt') {
+  return [...items].sort((a, b) => {
+    const aDate = new Date(a?.[dateKey] || 0).getTime();
+    const bDate = new Date(b?.[dateKey] || 0).getTime();
+    if (Number.isFinite(aDate) && Number.isFinite(bDate) && aDate !== bDate) {
+      return bDate - aDate;
+    }
+    const aId = Number(a?.id || 0);
+    const bId = Number(b?.id || 0);
+    return bId - aId;
+  });
+}
+
 function calculateResellerEarning(adminBasePrice, resalePrice) {
   const base = Number(adminBasePrice || 0);
   const resale = Number(resalePrice || 0);
@@ -383,7 +396,7 @@ app.post('/api/users/:uid/kyc', async (req, res) => {
 // Admin: list all users
 app.get('/api/admin/users', (req, res) => {
   const db = readDb();
-  res.json(db.users);
+  res.json(sortNewest(db.users, 'id'));
 });
 
 app.get('/api/admin/users/:uid/network', (req, res) => {
@@ -397,7 +410,7 @@ app.get('/api/admin/users/:uid/network', (req, res) => {
 
   const directReferrals = db.users
     .filter(u => u.referredBy === uid)
-    .sort((a, b) => a.id - b.id)
+    .sort((a, b) => b.id - a.id)
     .map(serializeUserSummary);
 
   res.json({
@@ -437,7 +450,7 @@ app.delete('/api/admin/users/:id', async (req, res) => {
 // list users who submitted KYC
 app.get('/api/admin/kyc-requests', (req, res) => {
   const db = readDb();
-  const withKyc = db.users.filter(u => u.kyc);
+  const withKyc = sortNewest(db.users.filter(u => u.kyc), 'id');
   res.json(
     withKyc.map(u => ({
       id: u.id,
@@ -532,7 +545,10 @@ app.post('/api/users/:uid/accounts', async (req, res) => {
 app.get('/api/users/:uid/accounts', (req, res) => {
   const { uid } = req.params;
   const db = readDb();
-  const userAccounts = db.accounts.filter(a => a.uid === uid);
+  const userAccounts = sortNewest(
+    db.accounts.filter(a => a.uid === uid),
+    'id'
+  );
   res.json(userAccounts);
 });
 
@@ -651,7 +667,10 @@ app.get('/api/users/:uid/bots', (req, res) => {
   const { uid } = req.params;
   const db = readDb();
   ensureBotsArray(db);
-  const userBots = db.bots.filter(b => b.uid === uid);
+  const userBots = sortNewest(
+    db.bots.filter(b => b.uid === uid),
+    'createdAt'
+  );
   res.json(userBots);
 });
 
@@ -666,7 +685,10 @@ app.get('/api/admin/users/:uid/bots', (req, res) => {
     return res.status(404).json({ message: 'User not found' });
   }
 
-  const userBots = db.bots.filter(b => b.uid === uid);
+  const userBots = sortNewest(
+    db.bots.filter(b => b.uid === uid),
+    'createdAt'
+  );
   res.json(userBots);
 });
 
@@ -1007,7 +1029,7 @@ app.get('/api/bots/resale', (req, res) => {
     };
   });
 
-  res.json(results);
+  res.json(sortNewest(results, 'createdAt'));
 });
 
 // Helper for resale arrays
@@ -1286,7 +1308,7 @@ app.get('/api/users/:uid/seller-requests', (req, res) => {
         ),
       };
     });
-  res.json(myRequests);
+  res.json(sortNewest(myRequests, 'createdAt'));
 });
 
 app.post('/api/bots/resale/requests/:requestId/send-to-admin', async (req, res) => {
@@ -1412,7 +1434,10 @@ app.get('/api/users/:uid/sale-history', (req, res) => {
   const { uid } = req.params;
   const db = readDb();
   ensureResaleArrays(db);
-  const history = db.resaleHistory.filter(h => h.sellerUid === uid);
+  const history = sortNewest(
+    db.resaleHistory.filter(h => h.sellerUid === uid),
+    'date'
+  );
   res.json(history);
 });
 
@@ -1420,7 +1445,7 @@ app.get('/api/users/:uid/sale-history', (req, res) => {
 app.get('/api/admin/resale-history', (req, res) => {
   const db = readDb();
   ensureResaleArrays(db);
-  res.json(db.resaleHistory || []);
+  res.json(sortNewest(db.resaleHistory || [], 'date'));
 });
 
 app.get('/api/admin/resale-approvals', (req, res) => {
@@ -2017,7 +2042,10 @@ app.get('/api/users/:uid/course-applications', (req, res) => {
     ensureCourseApplicationsArray(db);
     ensureCoursesArray(db);
 
-    const userApps = db.courseApplications.filter(a => a.uid === req.params.uid);
+    const userApps = sortNewest(
+      db.courseApplications.filter(a => a.uid === req.params.uid),
+      'createdAt'
+    );
 
     // Join with courses to get full details (description, youtubeLinks, etc.)
     const enrichedApps = userApps.map(app => {
