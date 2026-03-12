@@ -167,6 +167,23 @@ function clearInlineBlob(value) {
   return value.startsWith('data:') ? null : value;
 }
 
+function stripUndefinedDeep(value) {
+  if (Array.isArray(value)) {
+    return value.map(item => stripUndefinedDeep(item));
+  }
+
+  if (value && typeof value === 'object') {
+    const output = {};
+    Object.entries(value).forEach(([key, item]) => {
+      if (item === undefined) return;
+      output[key] = stripUndefinedDeep(item);
+    });
+    return output;
+  }
+
+  return value;
+}
+
 function compactDbForPersistence(db) {
   const normalized = applyDbDefaults(db);
 
@@ -205,7 +222,7 @@ function compactDbForPersistence(db) {
     return {
       ...request,
       paymentSlip: clearInlineBlob(request.paymentSlip),
-      adminPaymentSlip: clearInlineBlob(request.adminPaymentSlip),
+      adminPaymentSlip: clearInlineBlob(request.adminPaymentSlip ?? null),
     };
   });
 
@@ -216,12 +233,12 @@ function compactDbForPersistence(db) {
 
     return {
       ...submission,
-      adminPaymentSlip: clearInlineBlob(submission.adminPaymentSlip),
-      paymentSlip: clearInlineBlob(submission.paymentSlip),
+      adminPaymentSlip: clearInlineBlob(submission.adminPaymentSlip ?? null),
+      paymentSlip: clearInlineBlob(submission.paymentSlip ?? null),
     };
   });
 
-  return normalized;
+  return stripUndefinedDeep(normalized);
 }
 
 function writeDb(db) {
