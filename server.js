@@ -151,6 +151,9 @@ const firestore = getFirestore(firebaseApp);
 const FIRESTORE_COLLECTION = process.env.FIRESTORE_COLLECTION || 'gtc';
 const FIRESTORE_DOC = process.env.FIRESTORE_DOC || 'appData';
 const dbRef = firestore.collection(FIRESTORE_COLLECTION).doc(FIRESTORE_DOC);
+const adminBotsRef = firestore
+  .collection(FIRESTORE_COLLECTION)
+  .doc(`${FIRESTORE_DOC}_adminBots`);
 
 let dbCache = createInitialDb();
 let persistQueue = Promise.resolve();
@@ -169,7 +172,7 @@ function writeDb(db) {
 }
 
 async function writeDbAndWait(db) {
-  await writeDbAndWait(db);
+  writeDb(db);
   await persistQueue;
 }
 
@@ -182,6 +185,30 @@ async function loadDbFromFirestore() {
   }
 
   dbCache = applyDbDefaults(snapshot.data());
+}
+
+function sanitizeAdminBots(rawBots) {
+  if (!Array.isArray(rawBots)) return [];
+  return rawBots.filter(bot => bot && typeof bot === 'object');
+}
+
+async function getAdminBotsStore() {
+  const snapshot = await adminBotsRef.get();
+  if (snapshot.exists) {
+    const data = snapshot.data() || {};
+    return sanitizeAdminBots(data.bots);
+  }
+
+  // One-time fallback from legacy appData storage.
+  const db = readDb();
+  ensureAdminBotsArray(db);
+  const legacyBots = sanitizeAdminBots(db.adminBots);
+  await adminBotsRef.set({ bots: legacyBots }, { merge: true });
+  return legacyBots;
+}
+
+async function saveAdminBotsStore(bots) {
+  await adminBotsRef.set({ bots: sanitizeAdminBots(bots) }, { merge: true });
 }
 
 function ensurePaymentArrays(db) {
@@ -574,8 +601,8 @@ app.post('/api/users/:uid/bots', async (req, res) => {
     return res.status(404).json({ message: 'Broker account not found' });
   }
 
-  if (!db.adminBots) db.adminBots = [];
-  const adminBot = db.adminBots.find(b => b.id === botId);
+  const adminBots = await getAdminBotsStore();
+  const adminBot = adminBots.find(b => b.id === botId);
   if (!adminBot) {
     return res.status(404).json({ message: 'Bot not found' });
   }
@@ -641,13 +668,9 @@ function ensureAdminBotsArray(db) {
 }
 
 // List all bots, newest first
-app.get('/api/admin/bots', (req, res) => {
+app.get('/api/admin/bots', async (req, res) => {
   try {
-    const db = readDb();
-    ensureAdminBotsArray(db);
-    const safeBots = db.adminBots.filter(
-      bot => bot && typeof bot === 'object'
-    );
+    const safeBots = await getAdminBotsStore();
     const sorted = [...safeBots].sort(
       (a, b) => Number(b.id || 0) - Number(a.id || 0)
     );
@@ -679,8 +702,7 @@ app.post('/api/admin/bots', async (req, res) => {
       return res.status(400).json({ message: 'price, cost and subscriptionFee must be valid numbers' });
     }
 
-    const db = readDb();
-    ensureAdminBotsArray(db);
+    const adminBots = await getAdminBotsStore();
 
     const newBot = {
       id: Date.now(),
@@ -693,8 +715,8 @@ app.post('/api/admin/bots', async (req, res) => {
       createdAt: new Date().toISOString(),
     };
 
-    db.adminBots.push(newBot);
-    await writeDbAndWait(db);
+    adminBots.push(newBot);
+    await saveAdminBotsStore(adminBots);
 
     res.status(201).json(newBot);
   } catch (error) {
@@ -708,10 +730,8 @@ app.put('/api/admin/bots/:id', async (req, res) => {
   const id = Number(req.params.id);
   const { name, price, cost, subscriptionFee } = req.body;
 
-  const db = readDb();
-  ensureAdminBotsArray(db);
-
-  const bot = db.adminBots.find(b => b.id === id);
+  const adminBots = await getAdminBotsStore();
+  const bot = adminBots.find(b => b.id === id);
   if (!bot) return res.status(404).json({ message: 'Bot not found' });
 
   bot.name = name ?? bot.name;
@@ -727,16 +747,15 @@ app.put('/api/admin/bots/:id', async (req, res) => {
 // Delete bot
 app.delete('/api/admin/bots/:id', async (req, res) => {
   const id = Number(req.params.id);
-  const db = readDb();
-  ensureAdminBotsArray(db);
+  const adminBots = await getAdminBotsStore();
 
-  const index = db.adminBots.findIndex(b => b.id === id);
+  const index = adminBots.findIndex(b => b.id === id);
   if (index === -1) {
     return res.status(404).json({ message: 'Bot not found' });
   }
 
-  db.adminBots.splice(index, 1);
-  await writeDbAndWait(db);
+  adminBots.splice(index, 1);
+  await saveAdminBotsStore(adminBots);
 
   res.json({ message: 'Bot deleted' });
 });
@@ -857,7 +876,7 @@ app.put('/api/admin/bot-requests/:id/approve', async (req, res) => {
     });
   }
 
-  await writeDbAndWait(db);
+  await saveAdminBotsStore(adminBots);
   res.json({ message: 'Bot request approved', bot: b });
 });
 
