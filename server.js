@@ -164,11 +164,7 @@ function readDb() {
 
 function writeDb(db) {
   dbCache = applyDbDefaults(db);
-  persistQueue = persistQueue
-    .then(() => dbRef.set(dbCache))
-    .catch((error) => {
-      console.error('Failed to persist data to Firestore:', error);
-    });
+  persistQueue = persistQueue.then(() => dbRef.set(dbCache));
 }
 
 async function writeDbAndWait(db) {
@@ -578,71 +574,76 @@ app.get('/api/bots/catalog', (req, res) => {
 
 // Create a bot assignment for a user, using adminBots as source of truth
 app.post('/api/users/:uid/bots', async (req, res) => {
-  const { uid } = req.params;
-  const { brokerAccountId, botId, signedAgreementUrl, paymentSlip, requestType } = req.body;
-  const normalizedRequestType =
-    requestType === 'resell_request' ? 'resell_request' : 'direct_buy';
+  try {
+    const { uid } = req.params;
+    const { brokerAccountId, botId, signedAgreementUrl, paymentSlip, requestType } = req.body;
+    const normalizedRequestType =
+      requestType === 'resell_request' ? 'resell_request' : 'direct_buy';
 
-  if (!botId) {
-    return res.status(400).json({
-      message: 'botId is required',
-    });
-  }
-
-  const db = readDb();
-
-  const user = db.users.find(u => u.uid === uid);
-  if (!user) return res.status(404).json({ message: 'User not found' });
-
-  let account = null;
-  if (normalizedRequestType === 'direct_buy') {
-    if (!brokerAccountId || !signedAgreementUrl || !paymentSlip) {
+    if (!botId) {
       return res.status(400).json({
-        message: 'Direct buy requires brokerAccountId, signedAgreementUrl and paymentSlip',
+        message: 'botId is required',
       });
     }
 
-    account = db.accounts.find(
-      a => a.id === brokerAccountId && a.uid === uid
-    );
-    if (!account) {
-      return res.status(404).json({ message: 'Broker account not found' });
+    const db = readDb();
+
+    const user = db.users.find(u => u.uid === uid);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    let account = null;
+    if (normalizedRequestType === 'direct_buy') {
+      if (!brokerAccountId || !signedAgreementUrl || !paymentSlip) {
+        return res.status(400).json({
+          message: 'Direct buy requires brokerAccountId, signedAgreementUrl and paymentSlip',
+        });
+      }
+
+      account = db.accounts.find(
+        a => a.id === brokerAccountId && a.uid === uid
+      );
+      if (!account) {
+        return res.status(404).json({ message: 'Broker account not found' });
+      }
     }
+
+    const adminBots = await getAdminBotsStore();
+    const adminBot = adminBots.find(b => b.id === botId);
+    if (!adminBot) {
+      return res.status(404).json({ message: 'Bot not found' });
+    }
+
+    ensureBotsArray(db);
+
+    const newUserBot = {
+      id: Date.now(),
+      uid,
+      brokerAccountId: account ? brokerAccountId : null,
+      botId,
+      signedAgreementUrl: normalizedRequestType === 'direct_buy' ? signedAgreementUrl : null,
+      paymentSlip: normalizedRequestType === 'direct_buy' ? paymentSlip : null,
+      botName: adminBot.name,
+      botType: adminBot.botType || 'Trading Bot',
+      botModel: adminBot.botModel || 'N/A',
+      price: adminBot.price,
+      adminBasePrice: adminBot.price,
+      broker: account ? account.broker : 'N/A',
+      accountNumber: account ? account.accountNumber : 'N/A',
+      accountType: account ? account.accountType || 'N/A' : 'N/A',
+      requestType: normalizedRequestType,
+      canResell: normalizedRequestType === 'resell_request',
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+    };
+
+    db.bots.push(newUserBot);
+    await writeDbAndWait(db);
+
+    res.status(201).json(newUserBot);
+  } catch (error) {
+    console.error('Failed to create user bot request:', error);
+    res.status(500).json({ message: error.message || 'Failed to create bot request' });
   }
-
-  const adminBots = await getAdminBotsStore();
-  const adminBot = adminBots.find(b => b.id === botId);
-  if (!adminBot) {
-    return res.status(404).json({ message: 'Bot not found' });
-  }
-
-  ensureBotsArray(db);
-
-  const newUserBot = {
-    id: Date.now(),
-    uid,
-    brokerAccountId: account ? brokerAccountId : null,
-    botId,
-    signedAgreementUrl: normalizedRequestType === 'direct_buy' ? signedAgreementUrl : null,
-    paymentSlip: normalizedRequestType === 'direct_buy' ? paymentSlip : null,
-    botName: adminBot.name,
-    botType: adminBot.botType || 'Trading Bot',
-    botModel: adminBot.botModel || 'N/A',
-    price: adminBot.price,
-    adminBasePrice: adminBot.price,
-    broker: account ? account.broker : 'N/A',
-    accountNumber: account ? account.accountNumber : 'N/A',
-    accountType: account ? account.accountType || 'N/A' : 'N/A',
-    requestType: normalizedRequestType,
-    canResell: normalizedRequestType === 'resell_request',
-    status: 'pending',
-    createdAt: new Date().toISOString(),
-  };
-
-  db.bots.push(newUserBot);
-  await writeDbAndWait(db);
-
-  res.status(201).json(newUserBot);
 });
 
 // Get all bots for a user (user-facing)
